@@ -31,6 +31,7 @@ from tensorflow.keras.utils import to_categorical
 import stellargraph as sg
 from stellargraph.data import EdgeSplitter
 from stellargraph.mapper import GraphSAGELinkGenerator
+from stellargraph.mapper import GraphSAGENodeGenerator
 from stellargraph.layer import GraphSAGE, link_classification
 from stellargraph.layer.graphsage import AttentionalAggregator
 from stellargraph.data import UniformRandomWalk
@@ -123,45 +124,6 @@ logger.info(str(embedding_model.summary()))
 
 # ## Get embeddings
 
-from stellargraph.mapper import GraphSAGENodeGenerator
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import networkx as nx   
-import pandas as pd
-import numpy as np
-import os
-import random
-import matplotlib.pyplot as plt
-
-from tqdm import tqdm
-from scipy.spatial import cKDTree as KDTree
-from tensorflow.keras.utils import to_categorical
-
-import stellargraph as sg
-from stellargraph.data import EdgeSplitter
-from stellargraph.mapper import GraphSAGELinkGenerator
-from stellargraph.layer import GraphSAGE, link_classification
-from stellargraph.layer.graphsage import AttentionalAggregator
-from stellargraph.data import UniformRandomWalk
-from stellargraph.data import UnsupervisedSampler
-from sklearn.model_selection import train_test_split
-
-import tensorflow as tf
-from tensorflow import keras
-from sklearn import preprocessing, feature_extraction, model_selection
-from sklearn.linear_model import LogisticRegressionCV, LogisticRegression
-from sklearn.metrics import accuracy_score
-
-from stellargraph import globalvar
-
-from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
-#from umap import UMAP
-from stellargraph.mapper import GraphSAGENodeGenerator
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
 
 logger.info("filter min comp "+str(min_comp))
 

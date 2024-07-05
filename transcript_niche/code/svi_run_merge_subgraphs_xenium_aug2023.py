@@ -15,7 +15,6 @@ tensorflow.random.set_seed(1234)
 
 import networkx as nx
 import pandas as pd
-import numpy as np
 import os
 import random
 import matplotlib.pyplot as plt
@@ -35,10 +34,6 @@ from sklearn.model_selection import train_test_split
 
 import tensorflow as tf
 from tensorflow import keras
-from sklearn import preprocessing, feature_extraction, model_selection
-from sklearn.linear_model import LogisticRegressionCV, LogisticRegression
-from sklearn.metrics import accuracy_score
-
 from stellargraph import globalvar
 
 
@@ -50,7 +45,6 @@ set_seed(42)
 import sys
 import logging 
 import builtins
-import os
 import shutil
 
 logging.basicConfig(filename=sys.argv[5], 

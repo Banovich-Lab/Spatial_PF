@@ -12,7 +12,6 @@ from tensorflow.keras import backend as K
 tensorflow.random.set_seed(12345)
 import networkx as nx
 import pandas as pd
-import numpy as np
 import os
 import random
 import matplotlib.pyplot as plt
@@ -25,7 +24,6 @@ import stellargraph as sg
 from stellargraph.data import UniformRandomWalk
 import tensorflow as tf
 from tensorflow import keras
-from sklearn import preprocessing, feature_extraction, model_selection
 from stellargraph import globalvar
 from tensorflow.random import set_seed
 import sys
@@ -38,7 +36,7 @@ logging.basicConfig(filename=sys.argv[9],
                         format='%(asctime)s %(message)s', 
                         filemode='w',level=logging.INFO) 
 
-#Let us Create an object 
+#Let us Create an object for logging
 logger=logging.getLogger() 
 
 logger.info('GPU name: '+ str(tensorflow.config.experimental.list_physical_devices("GPU")))
@@ -64,8 +62,6 @@ logger.info('dmax set as '+str(dmax))
 logger.info('graph count components to '+str(components_len_csv))
  
 samplefile = raw_csv
-
-
 barcodes_df = pd.read_csv(samplefile, sep = ",", header=0)
 
 logger.info(str(barcodes_df.shape))
@@ -136,7 +132,6 @@ graph_meta.to_csv(fullgraph_meta_csv)
 
 ## finding connected components 
 ## useful for deciding filtering cut-offs
-
 logger.info("finding connected components ")
 
 components_len = []

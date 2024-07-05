@@ -11,7 +11,7 @@
 
 ## Main package versions
 
-1. Python 3.8; keras 2.11.0
+1. Python 3.8.0
       - networkx==2.8.8
       - stellargraph==1.2.1
       - numba==0.58.1

@@ -15,7 +15,7 @@ Rajat Walia<sup>11</sup>, Jennifer MS Sucre<sup>5,9</sup>, Jonathan A. Kropski<s
 <sup>8</sup> Department of Cardiac Surgery, Vanderbilt University Medical Center, Nashville, TN, USA \
 <sup>9</sup> Department of Cell and Developmental Biology, Vanderbilt University, Nashville, TN \
 <sup>10</sup> Department of Veterans Affairs Medical Center, Nashville, TN \
-<sup>11</sup> Department of Thoracic Disease and Transplantation, Norton Thoracic Institute, Phoenix, AZ, USA. \
+<sup>11</sup> Department of Thoracic Disease and Transplantation, Norton Thoracic Institute, Phoenix, AZ, USA. 
 
 <sup>a</sup> Authors contributed equally to the work.  \
 <sup>b</sup> Authors jointly supervised the work. \

@@ -21,9 +21,10 @@ Rajat Walia<sup>11</sup>, Jennifer MS Sucre<sup>5,9</sup>, Jonathan A. Kropski<s
 <sup>b</sup> Authors jointly supervised the work. \
 <sup>*</sup> Corresponding author information: Nicholas E Banovich, nbanovich@tgen.org
 
-BiorXiv preprint: [URL](https://www.biorxiv.org/content/10.1101/2023.12.15.571954v2) \
 
+#### BiorXiv preprint: [URL](https://www.biorxiv.org/content/10.1101/2023.12.15.571954v2)
 #### GEO Accession: [GSE250346](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE250346)
 
+\
 ** NOTE ** 
 This manuscript is currently under revision. GEO files were updated August 2024. Please see README included in GEO submission for important information.

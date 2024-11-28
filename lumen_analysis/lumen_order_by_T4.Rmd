@@ -1,0 +1,1073 @@
+---
+title: "lumen_order_by_T4_niche_proportion"
+author: "Ruqian Lyu"
+date: "2024-07-31"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+suppressPackageStartupMessages({
+  library(scater)
+  library(ggplot2)
+  library(mclust)
+  library(slingshot)
+  library(tradeSeq)
+  library(grDevices)
+  library(RColorBrewer)
+  library(ComplexHeatmap)
+  library(dplyr)
+  library(Seurat)
+  library(data.table)
+})
+
+
+```
+
+```{r}
+
+lumen_cell_types_sce <- readRDS(file="output/savedRDS/revisions2024/lumen_cell_types_sce.all.ct.rds")
+dim(lumen_cell_types_sce)
+
+```
+
+```{r}
+test_celltypes <- names(rowSums(assay(lumen_cell_types_sce,"final_CT_count")>=3) >=10)[rowSums(assay(lumen_cell_types_sce,"final_CT_count")>=3) >=10]
+length(test_celltypes)
+```
+
+## Celltype proportions in sample groups
+
+```{r,fig.width=12,fig.height=6}
+
+lumen_cell_types_sce$sample_affect <-
+  factor(lumen_cell_types_sce$sample_affect,
+         levels = c("Unaffected","Less Affected",
+                    "More Affected"))
+
+sample_level <- unique(data.frame(lumen_cell_types_sce$sample,
+                                  lumen_cell_types_sce$percent_pathology))
+
+sample_level <- sample_level$lumen_cell_types_sce.sample[order(sample_level$lumen_cell_types_sce.percent_pathology)]
+lumen_cell_types_sce$sample <- factor(lumen_cell_types_sce$sample,levels = sample_level)
+
+
+
+lumen_cell_types_sce$sample_type <-
+  factor(lumen_cell_types_sce$sample_type,levels = c("Unaffected","LF","MF","INT"))
+
+plotDots(lumen_cell_types_sce,features = rownames(lumen_cell_types_sce),
+         exprs_values = "final_CT_prop",group = "sample_affect")+
+plotDots(lumen_cell_types_sce,features = rownames(lumen_cell_types_sce),
+         exprs_values = "final_CT_prop",group = "sample_type")
+
+plotColData(lumen_cell_types_sce,x = "sample_affect", y ="percent_pathology")+
+  plotColData(lumen_cell_types_sce,x = "sample_type", y ="percent_pathology")
+  
+
+```
+
+## Using transcripts assigned in cells in T4 niche
+
+order by `pseudotime_rank_trans_t4_tie_avg`  
+
+```{r}
+lumen_order_by_t4 <- readr::read_csv("analysis/revision_2024/lumen_order_t4/pseudotime_by_niche_073024/lumen_metadata_niche_pseudotimes_073024.csv")
+lumen_order_by_t4 %>% ggplot()+geom_point(mapping = 
+                                            aes(x = pseudotime_rank_trans_t4_tie_avg,
+                                                y= sample_affect))
+```
+
+```{r}
+lumen_order_by_t4 %>% ggplot()+geom_point(mapping = 
+                                            aes(x = pseudotime_rank_trans_t4_tie_avg,
+                                                y = num_cells_lumen))
+```
+
+```{r}
+lumen_order_by_t4 <- data.frame(lumen_order_by_t4)
+rownames(lumen_order_by_t4) <- lumen_order_by_t4$lumen_id
+lumen_cell_types_sce$pseudotime_rank_trans_t4_tie_avg <- lumen_order_by_t4[colnames(lumen_cell_types_sce),
+                                                                           "pseudotime_rank_trans_t4_tie_avg"]
+
+```
+
+
+### CT changes along pseudotime order
+
+```{r}
+set.seed(100)
+# evaluateK(
+#   counts =
+#     assays(lumen_cell_types_sce)[["final_CT_count"]],
+#   family = "nb",
+#   k = 8:15,
+#   nGenes = 30,
+#   cellWeights =matrix(1,nrow = ncol(lumen_cell_types_sce)), 
+#   pseudotime = lumen_cell_types_sce$pseudotime_rank_trans_t4_tie_avg,
+#   offset = log(lumen_cell_types_sce$num_cells_lumen))
+```
+
+```{r}
+
+lumen_cell_types_sce_t4_ts <- fitGAM(counts =
+                                       assays(lumen_cell_types_sce)[["final_CT_count"]],
+                                  # sds = lumen_cell_types_sce_prop_PCA13$slingshot, 
+                                  family = "nb",
+                                  nknots = 12,
+                                  genes = test_celltypes,
+                                  cellWeights = matrix(1,nrow = ncol(lumen_cell_types_sce)), 
+                                  pseudotime = lumen_cell_types_sce$pseudotime_rank_trans_t4_tie_avg,
+                                  offset = log(lumen_cell_types_sce$num_cells_lumen))
+
+
+predicted_expr_along_time <- function(models = lumen_nuclei_RNA_sce_ts_knot13,
+                                      genes,
+                                      sce,
+                                  scale = TRUE){
+  predicted_gene_expr_lumen <- data.frame(predictCells(models = models, 
+                                                       gene = genes))
+  
+  
+  predicted_gene_expr_lumen_size_normed <- apply(predicted_gene_expr_lumen,1,
+                                                 function(x){
+    log(x)-log(sce[,colnames(predicted_gene_expr_lumen)]$num_cells_lumen) 
+  })
+  if(scale){
+      predicted_gene_expr_lumen_size_normed <- scale(predicted_gene_expr_lumen_size_normed)
+  } 
+  
+  predicted_gene_expr_lumen_size_normed_zscore_time_order <- 
+    predicted_gene_expr_lumen_size_normed[order(models$crv[,1]),]
+  
+  return(predicted_gene_expr_lumen_size_normed_zscore_time_order)
+}
+
+
+```
+
+
+
+### CT change Heatmap
+
+
+```{r}
+lumen_cell_types_sce_t4_m <- 
+  predicted_expr_along_time(sce = lumen_cell_types_sce,
+                          models = lumen_cell_types_sce_t4_ts,
+                          genes = test_celltypes)
+
+order_feature_by_peak <- function(lumen_by_feature,windowsize = 50){
+  gene_by_lumen <- t(lumen_by_feature)
+  rollmean_gene <- frollmean(as.data.table(lumen_by_feature), 
+                             windowsize,algo = "exact")
+  
+  gene_rank <- lapply(rollmean_gene, 
+                      function(x) which.max(x[windowsize:length(x)]))
+  
+  gene_rank <- unlist(gene_rank)
+  
+  names(gene_rank) <- colnames(lumen_by_feature)
+  gene_order_smooth <- names(gene_rank)[order(gene_rank)]
+  gene_order_smooth
+}
+
+```
+
+```{r}
+
+order_ct_by_peak <- order_feature_by_peak(lumen_cell_types_sce_t4_m,50)
+ct_ht <- Heatmap(t(lumen_cell_types_sce_t4_m)[order_ct_by_peak,],
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        show_column_names = FALSE,
+        name = "Celltype z-scored")
+ct_ht
+order_ct_by_peak <- order_feature_by_peak(lumen_cell_types_sce_t4_m,10)
+ct_ht <- Heatmap(t(lumen_cell_types_sce_t4_m)[order_ct_by_peak,],
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        show_column_names = FALSE,
+        row_names_gp = gpar(fontsize=6),
+        name= "Celltype z-scored")
+ct_ht
+
+```
+
+## Gene chunks
+
+```{r}
+
+lumen_nuclei_RNA_sce <- readRDS(file="./output/savedRDS/revisions2024/lumen_nuclei_sce.rds")
+dim(lumen_nuclei_RNA_sce)
+#lumen_nuclei_RNA_sce$lumen_size
+lumen_nuclei_RNA_sce$lumen_id <- colnames(lumen_nuclei_RNA_sce)
+```
+
+```{r}
+# using the pseudotime ordering from celltype based analysis
+
+lumen_nuclei_RNA_sce$Lineage1 <- lumen_cell_types_sce[,colnames(lumen_nuclei_RNA_sce)]$pseudotime_rank_trans_t4_tie_avg
+```
+
+```{r}
+set.seed(100)
+# evaluateK(assay(lumen_nuclei_RNA_sce,"trans_count"),k = 8:15,
+#           pseudotime = lumen_nuclei_RNA_sce$Lineage1,
+#           cellWeights = matrix( rep(1,ncol(lumen_nuclei_RNA_sce)),ncol=1),
+#           nGenes=50,
+#           BPPARAM = BiocParallel::MulticoreParam(workers = 4),
+#           offset = log(lumen_nuclei_RNA_sce$lumen_size),
+#           family = "nb")
+
+```
+
+
+```{r}
+
+### knot=10
+test_genes <- rowSums(assay(lumen_nuclei_RNA_sce,"trans_count") >=3) >=10
+test_genes <- names(test_genes[test_genes])
+length(test_genes)
+
+set.seed(100)
+lumen_nuclei_RNA_sce_ts_knot10 <- fitGAM(
+  counts =
+    lumen_nuclei_RNA_sce@assays@data$trans_count,
+  pseudotime = lumen_nuclei_RNA_sce$Lineage1,
+  cellWeights = matrix( rep(1,ncol(lumen_nuclei_RNA_sce)),ncol=1),
+  family = "nb", 
+  nknots = 10,
+  genes = test_genes,
+  offset = log(lumen_nuclei_RNA_sce$num_cells_lumen))
+
+
+```
+
+```{r}
+
+mean(rowData(lumen_nuclei_RNA_sce_ts_knot10)$tradeSeq$converged)
+rowData(lumen_nuclei_RNA_sce_ts_knot10)$assocRes <-
+  associationTest(lumen_nuclei_RNA_sce_ts_knot10,
+                  lineages = T,
+                  l2fc = 0,
+                  nPoints = 10,
+                  contrastType ="start")
+
+
+
+assocRes <- rowData(lumen_nuclei_RNA_sce_ts_knot10)$assocRes
+de_genes_knot10 <-  rownames(assocRes)[
+  which(p.adjust(assocRes$pvalue_1, "fdr") <= 0.01)
+]
+length(de_genes_knot10)
+grep("C20",de_genes_knot10)
+
+```
+
+
+
+
+```{r}
+predicted_gene_expr_lumen_size_normed_zscore_time_order <- 
+  predicted_expr_along_time(models = lumen_nuclei_RNA_sce_ts_knot10,
+                                    genes = de_genes_knot10,
+                                    sce = lumen_nuclei_RNA_sce)
+
+```
+
+```{r}
+
+predicted_cell_count_lumen_size_normed_zscore_time_order <-
+  predicted_expr_along_time(models = lumen_cell_types_sce_t4_ts,
+                                    sce = lumen_cell_types_sce,
+                                    genes = test_celltypes)
+
+```
+
+```{r}
+time_ordered_lumen <- rownames(predicted_gene_expr_lumen_size_normed_zscore_time_order ) 
+sum(time_ordered_lumen == rownames(predicted_cell_count_lumen_size_normed_zscore_time_order))
+
+```
+
+
+```{r}
+set.seed(100)
+sample_type_label = lumen_nuclei_RNA_sce[,time_ordered_lumen]$sample_type
+pseudotime_value = lumen_nuclei_RNA_sce_ts_knot10[,time_ordered_lumen]$crv$pseudotime
+percent_pathology = lumen_nuclei_RNA_sce_ts_knot10[,time_ordered_lumen]$crv$percent_pathology
+
+plot(colData(lumen_cell_types_sce_t4_ts[,time_ordered_lumen])$crv[,1],pseudotime_value)
+
+```
+### Find cut time points
+
+
+```{r}
+sample_affect_label = lumen_nuclei_RNA_sce[,time_ordered_lumen]$sample_affect
+sample_perc_pathology = lumen_nuclei_RNA_sce[,time_ordered_lumen]$percent_pathology
+
+data.frame(pseudotime_value,sample_affect_label,sample_perc_pathology) %>%
+  ggplot()+ggridges::geom_density_ridges(mapping=aes(y = sample_affect_label,
+                                                     x = sample_perc_pathology)) +
+  data.frame(pseudotime_value,sample_affect_label,sample_perc_pathology) %>%
+  ggplot()+ggridges::geom_density_ridges(mapping=aes(y = sample_affect_label,
+                                                     x = pseudotime_value))
+  
+  data.frame(pseudotime_value,sample_affect_label,sample_perc_pathology) %>%
+  ggplot()+geom_point(mapping=aes(y = sample_affect_label,
+                                                     x = pseudotime_value)) +
+    data.frame(pseudotime_value,sample_affect_label,sample_perc_pathology) %>%
+    ggplot()+ggridges::geom_density_ridges(mapping=aes(y = sample_affect_label,
+                                                       x = pseudotime_value))
+```
+
+```{r}
+
+cut_time_points <- c(750,1500)
+
+data.frame(pseudotime_value,sample_affect_label,sample_perc_pathology) %>%
+  ggplot()+geom_point(mapping=aes(y = sample_affect_label,
+                                  x = pseudotime_value)) +
+  data.frame(pseudotime_value,sample_affect_label,sample_perc_pathology) %>%
+  ggplot()+ggridges::geom_density_ridges(mapping=aes(y = sample_affect_label,
+                                                     x = pseudotime_value))+
+  geom_vline(mapping= aes(xintercept=cut_time_points[1]))+
+  geom_vline(mapping= aes(xintercept=cut_time_points[2]))
+
+```
+
+```{r,fig.height=16,fig.width=6,dpi=200}
+
+
+## find bimodal genes and split the genes by bimodal or not
+set.seed(100)
+h_clust_cut <- (cutree(hclust(dist(t(predicted_gene_expr_lumen_size_normed_zscore_time_order))),
+                       k = 20))
+
+p_ht <- Heatmap(t(predicted_gene_expr_lumen_size_normed_zscore_time_order),
+                show_row_names = T,
+                cluster_columns = FALSE,
+                show_column_names = FALSE,
+                row_split = h_clust_cut,
+                row_gap = unit(0.5, "mm"),
+                row_names_gp = gpar(fontsize=4),
+                # right_annotation = rowAnnotation(genes = anno_mark(at = at_loc,
+                #                                                    labels = show_genes[at_loc],
+                #                                                    labels_gp = gpar(fontsize = 7)),
+                #                                  show_legend=FALSE),
+                row_title_gp  = gpar(fontsize=7),
+                name = "Gene Expr\n z-scores",
+                heatmap_legend_param = 
+                  list(    legend_height = unit(2, "cm"),
+                           legend_gp = gpar(fontsize=7),
+                           title_gp = gpar(fontsize = 7, 
+                                           fontface = "bold")))
+
+pdf("analysis/revision_2024/lumen_order_t4/h_cluster.pdf",width = 8,height = 16)
+print(p_ht)
+dev.off()
+```
+
+
+```{r}
+library(circlize)
+pseudotime_col_fun = colorRamp2(c(0, 500, 1500), c("white", "lightblue", "darkblue")) 
+
+cell_col_fun = colorRamp2(c(-5, 0, 5), c("darkblue", "white", "firebrick")) 
+pathology_col_fun = colorRamp2(c(0, 50, 100), c("white", "lightblue", "darkblue")) 
+sample_type_label <- lumen_nuclei_RNA_sce[,time_ordered_lumen]$sample_type
+sample_type_label_color <- DiscretePalette(n=4)
+names(sample_type_label_color) <- unique(sample_type_label)
+
+```
+
+### Manually select bimodal gene clusters
+
+```{r}
+
+gene_trend <- h_clust_cut %in% c(19,12,10,20,18,17,8,13,11,3,9,1)
+
+bi_gene <- names(h_clust_cut)[gene_trend]
+single_mode_gene <- names(h_clust_cut)[!gene_trend]
+gene_mode <- rep("unimodal",ncol(predicted_gene_expr_lumen_size_normed_zscore_time_order))
+
+names(gene_mode) <- colnames(predicted_gene_expr_lumen_size_normed_zscore_time_order)
+gene_mode[bi_gene] <-"bimodal"
+ht_orders <- do.call(rbind,lapply(names(row_order(p_ht)), 
+                                  function(x) data.frame(x,row_order(p_ht)[[as.character(x)]]) ))
+
+ht_orders$gene <- colnames(predicted_gene_expr_lumen_size_normed_zscore_time_order)[ht_orders$row_order.p_ht...as.character.x...]
+ht_orders$gene_mode <- "unimodal"
+ht_orders$gene_mode[ht_orders$gene %in%bi_gene ] <- "bimodal"
+ht_orders$h_cluster <- ht_orders$x
+
+ht_orders$row_order.p_ht...as.character.x... <- NULL
+```
+
+
+```{r}
+mean_expr_per_lumen_in_chunks <- lapply(unique(ht_orders$x), 
+                                        function(h_c){
+ # ht_orders$gene[ht_orders$x == h_c]
+ rowMeans(predicted_gene_expr_lumen_size_normed_zscore_time_order[,ht_orders$gene[ht_orders$x == h_c],
+                                                                  drop=F])
+
+})
+mean_expr_per_lumen_in_chunks_max_at <- lapply(mean_expr_per_lumen_in_chunks,which.max)
+names(mean_expr_per_lumen_in_chunks_max_at) <- paste0("hcluster_",(unique(ht_orders$x)))
+
+```
+
+```{r}
+hchunks_order <- data.frame(do.call(rbind, mean_expr_per_lumen_in_chunks_max_at)) %>%
+  mutate(hcluster_label = rownames(do.call(rbind, mean_expr_per_lumen_in_chunks_max_at))) %>%
+ mutate(o_h = rank(as.numeric(VUHD116A_81),ties.method = "random")) %>% arrange(o_h)
+
+chunck_gene_peak <- hchunks_order$hcluster_label
+chunck_gene_peak <- gsub("hcluster_","",chunck_gene_peak)
+```
+
+```{r}
+chunck_gene_peak <- c( "4","16","7","14","2","15","5","6","19","1","12","10",
+                       "9","13","18","17","8","11","20","3")
+length(chunck_gene_peak)
+length(unique(chunck_gene_peak))
+```
+
+```{r,fig.height=14,fig.width=8}
+
+p_ht <- Heatmap(t(predicted_gene_expr_lumen_size_normed_zscore_time_order[,ht_orders$gene]),
+                show_row_names = T,
+                cluster_rows = F,
+                cluster_columns = FALSE,
+                show_column_names = FALSE,
+                row_split = factor(ht_orders$h_cluster,levels = chunck_gene_peak),
+                row_gap = unit(0.5, "mm"),
+                row_names_gp = gpar(fontsize=4),
+                # right_annotation = rowAnnotation(genes = col_mark(at = at_loc,
+                #                                                    labels = show_genes[at_loc],
+                #                                                    labels_gp = gpar(fontsize = 7)),
+                #                                  show_legend=FALSE),
+                top_annotation = 
+                      HeatmapAnnotation(pseudotime = pseudotime_value,
+                                        sample_type = sample_type_label,
+                                        percent_pathology = sample_perc_pathology,
+                                        col  = list(pseudotime = pseudotime_col_fun,
+                                                    sample_type = sample_type_label_color,
+                                                    percent_pathology = pathology_col_fun)),
+                row_title_gp  = gpar(fontsize=7),
+                name = "Gene Expr\n z-scores",
+                heatmap_legend_param = 
+                  list(    legend_height = unit(2, "cm"),
+                           legend_gp = gpar(fontsize=7),
+                           title_gp = gpar(fontsize = 7, 
+                                           fontface = "bold")))
+pdf("analysis/revision_2024/lumen_order_t4/ht_map_cluster_reorder_chunks.pdf",
+    width = 8,height = 16)
+print(p_ht)
+
+dev.off()
+
+ct_ht <- Heatmap(t(lumen_cell_types_sce_t4_m)[order_ct_by_peak,],
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        show_column_names = FALSE,
+        row_names_gp = gpar(fontsize=5),
+       
+        name= "Celltype z-scored")
+ct_ht
+
+
+pdf("analysis/revision_2024/lumen_order_t4/ct_stack_ht_map_cluster_reorder_chunks.pdf",
+    width = 8,height = 18)
+ct_ht %v% p_ht
+dev.off()
+
+
+```
+
+```{r}
+write.csv(t(lumen_cell_types_sce_t4_m)[order_ct_by_peak,],
+          "analysis/revision_2024/lumen_order_t4/ct_heatmap_peakordered_mat.csv")
+```
+
+
+```{r}
+ct_ht %v% p_ht
+
+```
+
+
+```{r}
+chane_time <- apply(predicted_gene_expr_lumen_size_normed_zscore_time_order,2,
+                    function(x){
+ if(mean( x[1:5]) < 0 ){
+   increase_to1 <- c("increase",which(x >= 0.5 )[1])
+   if(is.na(which(x >= 0.5 )[1])){
+     increase_to1 <- c("increase",which(x >= 0 )[1])
+   }
+   increase_to1
+ } else {
+   c("decrease",which(x <= 1 )[1])
+ }
+
+})
+```
+
+```{r}
+chane_time_rank <- data.frame(t((as.matrix(chane_time)))) 
+chane_time_rank$gene <- rownames(chane_time_rank)
+
+chane_time_rank <- chane_time_rank %>%
+  mutate(X2 = as.numeric(X2)) %>%
+  group_by(X1) %>% 
+  mutate(in_group_rank = case_when(
+  (X1 == "increase" ) ~  rank(X2,ties.method = "random"),
+ (X1 == "decrease" ) ~  rank(-X2,ties.method = "random")))
+
+
+```
+
+```{r}
+chane_time_rank$in_group_rank[chane_time_rank$X1=="decrease"] <-
+  chane_time_rank$in_group_rank[chane_time_rank$X1=="decrease"] + 2500
+chane_time_rank <- chane_time_rank %>% arrange(in_group_rank)
+
+change_time_order <- chane_time_rank$gene
+```
+
+```{r}
+# Define range and parameters
+start <- 1
+end <- 1747
+bin_size <- 10
+step_size <- 5
+# Load necessary library
+library(dplyr)
+
+# Define a sample data frame
+data <- data.frame(
+  time = start:end,
+  value = start:end
+)
+
+# Define the rolling window size and step size
+window_size <- 10
+step_size <- 5
+
+# Function to apply rolling window
+rolling_window_df <- function(x, window_size, step_size) {
+  result <- list()
+  actual_bins <- seq(1, length(x) - window_size + 1, by = step_size) 
+  for (i in actual_bins) {
+    windowed_value <- x[i:(i + window_size - 1)]
+    result[[length(result) + 1]] <- mean(windowed_value)
+  }
+  return(unlist(result))
+}
+
+# Apply rolling window
+#result_df <- rolling_window_df(data, window_size, step_size)
+
+```
+
+
+```{r}
+predicted_gene_expr_lumen_size_normed_zscore_time_order[1:5,1:5]
+```
+
+```{r}
+diff_m <- apply(predicted_gene_expr_lumen_size_normed_zscore_time_order,2, diff)
+head(diff_m[1:5,1:4])
+
+```
+
+```{r}
+
+win_size <- 50
+
+rollmean_gene <- frollmean(as.data.table(predicted_gene_expr_lumen_size_normed_zscore_time_order),
+                           win_size,algo = "exact")
+
+gene_rank <- lapply(rollmean_gene, 
+                    function(x) which.max(x[win_size:length(x)]))
+gene_rank <- unlist(gene_rank)
+
+names(gene_rank) <- colnames(predicted_gene_expr_lumen_size_normed_zscore_time_order)
+unique(gene_rank)
+```
+
+```{r}
+epx <- 10 
+diff_ranked <- lapply(unique(gene_rank), function(x){
+  tied_genes <- names( gene_rank[gene_rank==x])
+  if(x < epx) {
+    expand_x <- seq(1,x+epx)
+  } else if( (x+epx) > (ncol(gene_by_lumen)-1) ) {
+    expand_x <- seq(x-epx,(ncol(gene_by_lumen)-1))
+  } else {
+      expand_x <- seq(x-epx,x+epx)
+
+  }
+  #expand_x
+  data.frame(diff_ranked_gene = tied_genes,
+             diff_rank = rank(colMeans(diff_m[expand_x,tied_genes,drop=FALSE]),ties.method = "random"),
+             peak_rank = x)
+  
+})
+
+```
+
+```{r}
+diff_ranked_df <- do.call(rbind,diff_ranked)
+
+```
+
+
+```{r}
+two_level_gene_ranks <- data.frame(diff_ranked_df) %>% arrange(peak_rank,diff_rank) %>% rownames()
+```
+
+```{r}
+smooth_times <- predictSmooth(lumen_nuclei_RNA_sce_ts_knot10,gene = test_genes,
+              nPoints = 300,tidy =FALSE)
+sum(duplicated(apply(smooth_times,1,which.max)))
+
+```
+```{r}
+Heatmap(t(scale(t(smooth_times))),cluster_columns = FALSE)
+```
+
+
+```{r}
+p_change_time <- Heatmap(t(predicted_gene_expr_lumen_size_normed_zscore_time_order[,change_time_order]),
+                show_row_names = T,
+                cluster_rows = F,
+                cluster_columns = FALSE,
+                show_column_names = FALSE,
+               # row_split = factor(ht_orders$h_cluster,levels = chunck_gene_peak),
+                row_gap = unit(0.5, "mm"),
+                row_names_gp = gpar(fontsize=4),
+                # right_annotation = rowAnnotation(genes = col_mark(at = at_loc,
+                #                                                    labels = show_genes[at_loc],
+                #                                                    labels_gp = gpar(fontsize = 7)),
+                #                                  show_legend=FALSE),
+                row_title_gp  = gpar(fontsize=7),
+                name = "Gene Expr\n z-scores",
+                heatmap_legend_param = 
+                  list(    legend_height = unit(2, "cm"),
+                           legend_gp = gpar(fontsize=7),
+                           title_gp = gpar(fontsize = 7, 
+                                           fontface = "bold")))
+pdf("analysis/revision_2024/lumen_order_t4/ht_map_cluster_reorder_change_time.pdf",
+    width = 8,height = 14)
+print(          p_change_time      )
+
+dev.off()
+```
+
+```{r}
+head(ht_orders)
+```
+
+
+```{r}
+reordered_perchunk <- sapply(chunck_gene_peak,function(genes_hcluster){
+  genes <- ht_orders$gene[ht_orders$x == genes_hcluster]
+  res <- data.frame(match_change_time=match(genes,change_time_order),
+             rank_changetime = rank(match(genes,change_time_order)),
+             genes = genes) %>% arrange(rank_changetime) 
+  res$genes
+})
+names(reordered_perchunk)
+```
+
+
+
+```{r}
+gene_annot_hcluster_df <- data.frame(genes = as.character(unlist(reordered_perchunk)),
+                            gene_chunks = rep(names(reordered_perchunk),
+                                              times= as.numeric(as.character(sapply(reordered_perchunk,length)))))
+
+gene_annot_hcluster_df$gene_mode <- ht_orders$gene_mode[match(gene_annot_hcluster_df$genes, ht_orders$gene)]
+```
+
+
+ 
+```{r,fig.height=14,fig.width=8}
+
+p_ht <- Heatmap(t(predicted_gene_expr_lumen_size_normed_zscore_time_order[,gene_annot_hcluster_df$genes]),
+                show_row_names = T,
+                cluster_rows = F,
+                cluster_columns = FALSE,
+                show_column_names = FALSE,
+                row_split = factor(gene_annot_hcluster_df$gene_chunks,levels = chunck_gene_peak),
+                row_gap = unit(0.5, "mm"),
+                row_names_gp = gpar(fontsize=4),
+                top_annotation = 
+                      HeatmapAnnotation(pseudotime = pseudotime_value,
+                                        sample_type = sample_type_label,
+                                        percent_pathology =sample_perc_pathology,
+                                        col  = list(pseudotime = pseudotime_col_fun,
+                                                    sample_type = sample_type_label_color,
+                                                    percent_pathology = pathology_col_fun)),
+                row_title_gp  = gpar(fontsize=7),
+                name = "Gene Expr\n z-scores",
+                heatmap_legend_param = 
+                  list(    legend_height = unit(2, "cm"),
+                           legend_gp = gpar(fontsize=7),
+                           title_gp = gpar(fontsize = 7, 
+                                           fontface = "bold")))
+
+pdf("analysis/revision_2024/lumen_order_t4/ht_map_cluster_reorder_chunks_order_within_chunks.pdf",
+    width = 8,height = 16)
+print(p_ht)
+
+dev.off()
+```
+
+## Set chunks 16,7,14,2,15, as early, 5, 6 as late, 4 as normal
+
+```{r}
+gene_annot_hcluster_df$gene_split_label <- gene_annot_hcluster_df$gene_mode
+gene_annot_hcluster_df$gene_split_label[gene_annot_hcluster_df$gene_chunks %in%
+                                          c(16,7,14,2,15,5)] <- "Early"
+gene_annot_hcluster_df$gene_split_label[gene_annot_hcluster_df$gene_chunks %in%
+                                          c( 6)] <- "Late"
+gene_annot_hcluster_df$gene_split_label[gene_annot_hcluster_df$gene_chunks %in% 
+                                          c( 4)] <- "Normal"
+```
+
+
+```{r,fig.height=16,fig.width=8}
+
+p_ht_gene_split <- Heatmap(t(predicted_gene_expr_lumen_size_normed_zscore_time_order[,gene_annot_hcluster_df$genes]),
+                show_row_names = T,
+                cluster_rows = F,
+                cluster_columns = FALSE,
+                show_column_names = FALSE,
+                row_split = factor(gene_annot_hcluster_df$gene_split_label,levels = c("Normal","Early","Late","bimodal")),
+                row_gap = unit(0.5, "mm"),
+                row_names_gp = gpar(fontsize=4),
+                top_annotation = 
+                      HeatmapAnnotation(pseudotime = pseudotime_value,
+                                        sample_type = sample_type_label,
+                                        percent_pathology =sample_perc_pathology,
+                                        col  = list(pseudotime = pseudotime_col_fun,
+                                                    sample_type = sample_type_label_color,
+                                                    percent_pathology = pathology_col_fun)),
+                row_title_gp  = gpar(fontsize=12),
+                name = "Gene Expr\n z-scores",
+                heatmap_legend_param = 
+                  list(    legend_height = unit(2, "cm"),
+                           legend_gp = gpar(fontsize=7),
+                           title_gp = gpar(fontsize = 7, 
+                                           fontface = "bold")))
+p_ht_gene_split
+
+pdf("analysis/revision_2024/lumen_order_t4/hcluster_chunk_ordered_change_time_ordered_gene_split.pdf",
+    width = 8,height = 16)
+print(p_ht_gene_split)
+dev.off()
+
+
+```
+
+
+```{r}
+hcluster_chunk_ordered_change_time_ordered <- t(predicted_gene_expr_lumen_size_normed_zscore_time_order[,gene_annot_hcluster_df$genes])
+write.csv(hcluster_chunk_ordered_change_time_ordered,
+          "analysis/revision_2024/lumen_order_t4/hcluster_chunk_ordered_change_time_ordered_mat.csv")
+
+
+## Set chunk 
+write.csv(gene_annot_hcluster_df,
+          "analysis/revision_2024/lumen_order_t4/hcluster_chunk_ordered_change_time_ordered_mat_rowAnnot.csv")
+
+
+```
+
+
+
+```{r}
+
+library(data.table)
+library(circlize)
+
+gene_by_lumen <- t(predicted_gene_expr_lumen_size_normed_zscore_time_order)
+
+win_size <- 200
+
+rollmean_gene <- frollmean(as.data.table(predicted_gene_expr_lumen_size_normed_zscore_time_order),
+                           win_size,algo = "exact")
+
+gene_rank <- lapply(rollmean_gene, 
+                    function(x) which.max(x[win_size:length(x)]))
+gene_rank <- unlist(gene_rank)
+
+names(gene_rank) <- colnames(predicted_gene_expr_lumen_size_normed_zscore_time_order)
+length(table(gene_rank))
+
+```
+
+
+## Order genes by peak time 
+
+```{r}
+
+## simply 
+length(table(apply(predicted_gene_expr_lumen_size_normed_zscore_time_order, 2, which.max)))
+
+win_size <- 50
+
+rollmean_gene <- frollmean(as.data.table(predicted_gene_expr_lumen_size_normed_zscore_time_order),
+                           win_size,algo = "exact")
+
+gene_rank <- lapply(rollmean_gene, 
+                    function(x) which.max(x[win_size:length(x)]))
+gene_rank <- unlist(gene_rank)
+
+names(gene_rank) <- colnames(predicted_gene_expr_lumen_size_normed_zscore_time_order)
+length(table(gene_rank))
+
+gene_peak_time <- lumen_cell_types_sce[,rownames(predicted_gene_expr_lumen_size_normed_zscore_time_order)[gene_rank]]$pseudotime_rank_trans_t4_tie_avg
+
+```
+
+
+
+```{r}
+
+# gene_peak_time1 <- lumen_nuclei_RNA_sce[,rownames(predicted_gene_expr_lumen_size_normed_zscore_time_order)[gene_rank]]$Lineage1
+names(gene_peak_time) <- names(gene_rank)
+
+gene_cat_df <- data.frame(genes = names(gene_peak_time),gene_peak_time) %>% 
+  mutate(gene_cat = case_when(gene_peak_time <= cut_time_points[1] ~ "Normal",
+                              gene_peak_time <= cut_time_points[2]~"Early",
+                              gene_peak_time > cut_time_points[2]~ "Late"))
+
+gene_cat_df %>% ggplot()+
+  geom_point(mapping= aes(y=genes,x = gene_peak_time,
+                          color = gene_cat))
+
+gene_cat_df %>% group_by(gene_cat) %>%
+  summarise(gene_cat_count = n())
+
+gene_order_smooth <- names(gene_rank)[order(gene_rank)]
+#gene_order_smooth
+gene_cat_df$gene_order <- match(gene_cat_df$genes,gene_order_smooth)
+```
+
+## When peak time is the same, order by change time (same as above ordering genes within hcluster chunks)
+
+```{r}
+gene_cat_df <- gene_cat_df %>% mutate(change_time_order = match(genes,
+                                                                change_time_order)) %>%
+  arrange(gene_peak_time,change_time_order)
+```
+
+
+
+
+```{r}
+
+c(max(lumen_nuclei_RNA_sce$Lineage1),min(lumen_nuclei_RNA_sce$Lineage1))
+c(max(gene_by_lumen),min(gene_by_lumen))
+```
+
+```{r}
+gene_cat_df$gene_mode <- ht_orders$gene_mode[match(gene_cat_df$genes, ht_orders$gene)]
+```
+
+
+```{r,fig.width=12,fig.height=15}
+gene_order_smooth_new <- gene_cat_df$genes
+
+gene_ht2 <- Heatmap(gene_by_lumen[gene_order_smooth_new,],
+                    cluster_columns = FALSE, cluster_rows = FALSE,
+                    row_names_gp = gpar(fontsize=4),
+                    row_names_side = "right",
+                    row_title_gp = gpar(fontsize=12),
+                    row_title_side = "left",
+                    row_split = gene_cat_df$gene_mode,
+                    column_names_gp = gpar(fontsize=2),show_column_names = FALSE,
+                    row_title_rot = 0,
+                    #col = cell_col_fun,
+                    top_annotation = 
+                      HeatmapAnnotation(pseudotime = pseudotime_value,
+                                        sample_type = sample_type_label,
+                                        percent_pathology =sample_perc_pathology,
+                                        col  = list(pseudotime = pseudotime_col_fun,
+                                                    sample_type = sample_type_label_color,
+                                                    percent_pathology = pathology_col_fun)),
+                    width = unit(10, "cm"))
+
+pdf("analysis/revision_2024/lumen_order_t4/ht_map_by_peaktime_by_change_time.pdf",
+    width =8,height = 16)
+print(gene_ht2)
+dev.off()
+```
+
+
+## Per CT test results
+
+```{r}
+
+sig_gene_per_ct <- readr::read_csv(file="output/savedRDS/revisions2024/perCT/all_perCT_sig_terms_s15.csv")
+
+celltype_color <- DiscretePalette(n=length( unique(sig_gene_per_ct$celltype)))
+names(celltype_color) <- unique(sig_gene_per_ct$celltype)
+
+```
+```{r}
+gene_anchors <- match(c("GNLY","CXCL9"),gene_cat_df$genes)
+
+```
+```{r}
+gene_cat_df$split_gene_anchor <- rep(c("Normal","Early","Late"),times=c(gene_anchors[1],gene_anchors[2]-gene_anchors[1],
+                                                                        nrow(gene_cat_df)-gene_anchors[2]))
+
+gene_cat_df$split_gene_anchor[gene_cat_df$gene_mode=="bimodal"] <- "bimodal"
+```
+
+```{r,fig.width=10,fig.height=18}
+
+gene_ht2_new_split <- Heatmap(gene_by_lumen[gene_order_smooth_new,],
+                    cluster_columns = FALSE, cluster_rows = FALSE,
+                    row_names_gp = gpar(fontsize=5),
+                    row_names_side = "right",
+                    row_title_gp = gpar(fontsize=12),
+                    row_title_side = "left",
+                    row_split = factor(gene_cat_df[gene_order_smooth_new,"split_gene_anchor"],
+                                          levels=c("Normal","Early","Late","bimodal")),
+                    column_names_gp = gpar(fontsize=2),
+                    show_column_names = FALSE,
+                    #col = cell_col_fun,
+
+                    row_title_rot = 0,
+                    top_annotation = 
+                  HeatmapAnnotation(pseudotime = pseudotime_value,
+                                        sample_type = sample_type_label,
+                                        percent_pathology =sample_perc_pathology,
+                                        col  = list(pseudotime = pseudotime_col_fun,
+                                                    sample_type = sample_type_label_color,
+                                                    percent_pathology = pathology_col_fun)),
+                    width = unit(10, "cm"))
+
+gene_ht2_new_split
+pdf(paste0("analysis/revision_2024/lumen_order_t4/gene_chunks_split_by_",gene_anchors[1],"_and_",gene_anchors[2],".pdf"),
+    height = 16,width = 8)
+print(gene_ht2_new_split)
+dev.off()
+```
+
+```{r,fig.width=10,fig.height=10}
+par(mfrow=c(2,2))
+plot(predicted_gene_expr_lumen_size_normed_zscore_time_order[,"FN1"],
+     ylab = "FN1",xlab="time_ordered_lumen")
+abline(a=1,b=0)
+plot(predicted_gene_expr_lumen_size_normed_zscore_time_order[,"IL2RA"],
+     ylab = "IL2RA",xlab="time_ordered_lumen")
+abline(a=1,b=0)
+plot(predicted_gene_expr_lumen_size_normed_zscore_time_order[,"CD4"],
+     ylab = "CD4",xlab="time_ordered_lumen")
+abline(a=1,b=0)
+plot(predicted_gene_expr_lumen_size_normed_zscore_time_order[,"KRT15"],
+     ylab = "KRT15",xlab="time_ordered_lumen")
+abline(a=1,b=0)
+```
+
+
+```{r}
+write.csv(gene_by_lumen[gene_order_smooth_new,],file = "analysis/revision_2024/lumen_order_t4/gene_order_by_peaktime_by_change_time_mat.csv")
+write.csv(gene_cat_df[gene_order_smooth_new,],file = "analysis/revision_2024/lumen_order_t4/gene_order_by_peaktime_by_change_time_mat_rowAnnot.csv")
+
+```
+
+
+
+
+```{r}
+sig_gene_per_ct_m <- sig_gene_per_ct %>% select(gene,celltype,padj) %>%
+  mutate(padj = ifelse(padj <=0, 1e-5,padj)) %>%
+  mutate(padj = -log10(padj)) %>%
+  tidyr::pivot_wider(names_from = celltype,values_from = padj)
+
+sig_gene_per_ct_mtx <- as.matrix(sig_gene_per_ct_m[,2:ncol(sig_gene_per_ct_m)])
+rownames(sig_gene_per_ct_mtx) <- sig_gene_per_ct_m$gene
+sig_gene_per_ct_mtx_filled <- data.frame(sig_gene_per_ct_mtx)[unique(gene_order_smooth),]
+rownames(sig_gene_per_ct_mtx_filled) <- unique(gene_order_smooth)
+
+padj_col_fun = colorRamp2(c(1, 2, 5), c("pink", "red", "red3"))
+
+ct_specfic_ht <-
+  Heatmap(sig_gene_per_ct_mtx_filled,cluster_rows = FALSE,col=padj_col_fun,
+          cluster_columns = FALSE,na_col = "white",
+          show_row_names = FALSE,
+          name="-log10(padj)",column_names_gp = gpar(fontsize=8),
+          width = unit(4, "cm"),
+          show_heatmap_legend = FALSE)
+ct_specfic_ht
+ct_specfic_ht_gene_split <-
+  Heatmap(sig_gene_per_ct_mtx_filled,cluster_rows = FALSE,col=padj_col_fun,
+          cluster_columns = FALSE,na_col = "white",
+          row_split = gene_cat_df[rownames(sig_gene_per_ct_mtx_filled),"gene_cat"],
+          show_row_names = FALSE,
+          name="-log10(padj)",column_names_gp = gpar(fontsize=8),
+          width = unit(4, "cm"),
+          show_heatmap_legend = FALSE)
+```
+
+```{r,fig.width=10,fig.height=6}
+ct_lineage_map <- read.csv(
+  "../../../Dataset/LFST_2022/REVISION_new_samples_052924/062724_late_IPF_Seurat_and_heatmap/ct_lineage_map.csv")
+sig_gene_per_ct$lineage <- match(sig_gene_per_ct$celltype, make.names(ct_lineage_map$cell_object_meta.final_CT))
+sig_gene_per_ct$final_lineage  <- ct_lineage_map$cell_object_meta.final_lineage[sig_gene_per_ct$lineage]
+sig_gene_per_ct$gene_cat <- gene_cat_df$gene_cat[match(sig_gene_per_ct$gene,gene_cat_df$genes)]
+sig_gene_per_ct$split_gene_anchor <- gene_cat_df$split_gene_anchor[match(sig_gene_per_ct$gene,gene_cat_df$genes)]
+sig_gene_per_ct$split_hcluster_chunk <- gene_annot_hcluster_df$gene_split_label[match(sig_gene_per_ct$gene,gene_annot_hcluster_df$genes)]
+
+sig_gene_per_ct$final_lineage  <- ct_lineage_map$cell_object_meta.final_lineage[sig_gene_per_ct$lineage]
+
+```
+
+```{r,fig.width=12,fig.height=8}
+
+sig_gene_per_ct %>% ggplot()+geom_bar(mapping = aes(x = final_lineage,
+                                                    fill=split_gene_anchor))+
+  facet_wrap(.~split_gene_anchor)+
+  scale_fill_manual(values=DiscretePalette(n=5,palette = "glasbey"))+
+  theme(axis.text.x = element_text(angle=90))+
+  sig_gene_per_ct %>% ggplot()+geom_bar(mapping = aes(x = split_gene_anchor,
+                                                    fill=final_lineage),position = "dodge")+
+  scale_fill_manual(values=DiscretePalette(n=5))+
+
+
+sig_gene_per_ct %>% ggplot()+geom_bar(mapping = aes(x = final_lineage,
+                                                    fill=split_hcluster_chunk))+
+  facet_wrap(.~split_hcluster_chunk)+
+  scale_fill_manual(values=DiscretePalette(n=5,palette = "glasbey"))+
+  theme(axis.text.x = element_text(angle=90))+
+  sig_gene_per_ct %>% ggplot()+geom_bar(mapping = aes(x = split_hcluster_chunk,
+                                                    fill= final_lineage),position = "dodge")+
+  scale_fill_manual(values=DiscretePalette(n=5))
+
+```
+
+```{r}
+write.csv(sig_gene_per_ct,"analysis/revision_2024/lumen_order_t4/sig_genes_per_celltype.csv")
+```
+
+
+```{r}
+saveRDS(lumen_nuclei_RNA_sce, "analysis/revision_2024/lumen_order_t4/lumen_nuclei_RNA_sce_t4_ordered.rds")
+saveRDS(lumen_cell_types_sce, "analysis/revision_2024/lumen_order_t4/lumen_cell_types_sce_t4_ordered.rds")
+saveRDS(lumen_cell_types_sce_t4_ts, "analysis/revision_2024/lumen_order_t4/lumen_cell_types_sce_t4_tradeseq.rds")
+saveRDS(lumen_nuclei_RNA_sce_ts_knot10, "analysis/revision_2024/lumen_order_t4/lumen_nuclei_RNA_sce_t4_tradeseq.rds")
+
+```
+
+

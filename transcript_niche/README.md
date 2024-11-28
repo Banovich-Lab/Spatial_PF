@@ -2,7 +2,7 @@
 
 ## svi_run_build-full-g-xenium-unify-dmax.smk
 
-**A snakemake file that defines the following rules**: 
+**A snakemake file that defines the following rules (computational steps)**: 
 1. Build mRNA spatial graphs per sample using radius threshold d
 1. Create subgraph per sample from the randomly sample N root nodes
 1. Subgraphs from 28 samples were merged into one graph

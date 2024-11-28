@@ -1,0 +1,550 @@
+---
+title: "2024-08-15_aggregated_cells_per_annotation_instance"
+author: "Ruqian Lyu"
+date: "2024-08-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,dpi = 150)
+```
+
+## Aggregated cell counts per annotation instance
+
+```{r}
+suppressPackageStartupMessages({
+  library(scran)
+  library(Seurat)
+  library(limma)
+  library(ComplexHeatmap)
+  library(scater)
+  library(edgeR)
+
+})
+```
+
+
+## Load SCE
+
+Add Sample_type annotation
+
+```{r}
+
+aggr_sample_annotation_instance_sce <- 
+  readRDS(file = "output/savedRDS/revisions2024/aggr_sample_annotation_instance_sce.rds")
+```
+
+sizeFactor is the number of cells per annotation instance
+
+```{r}
+head(aggr_sample_annotation_instance_sce$sizeFactor)
+```
+
+normalizeCounts 
+
+`normcounts` contains the mean gene expression per cell for each annotation instance
+`logcounts` contains the log2 transformed log2(cell mean gene expression + 1) for each annotation instance
+
+
+```{r}
+assays(aggr_sample_annotation_instance_sce)
+```
+
+```{r}
+par(mfrow=c(2,2))
+hist(assay(aggr_sample_annotation_instance_sce,"logcounts"),xlab="",
+           main="logcounts")
+hist(assay(aggr_sample_annotation_instance_sce,"normcounts"),xlab="",
+     main ="normcounts")
+hist(assay(aggr_sample_annotation_instance_sce,"cell_count_normed"),xlab="",
+     main="cell_count_normed")
+hist(assay(aggr_sample_annotation_instance_sce,"total_count_normed"),xlab="",
+     main = "total_count_normed")
+
+```
+```{r}
+aggr_sample_annotation_instance_sce$total_trans <- 
+  colSums(assay(aggr_sample_annotation_instance_sce))
+```
+
+```{r}
+## add 1 to each count, and scale by total trans count per instance, and log2 transformation
+aggr_sample_annotation_instance_sce <- logNormCounts(aggr_sample_annotation_instance_sce,
+                                                     assay.type = "counts",
+                                                     normalize.all = T,
+                                                     center.size.factors = FALSE,
+                                                     pseudo.count = 1,
+                                                     name = "logcounts_trans",
+                                                     size.factors = aggr_sample_annotation_instance_sce$total_trans,
+                                                     transform = "log")
+```
+
+
+PCA using logcounts_trans
+
+```{r}
+set.seed(100)
+aggr_sample_annotation_instance_sce <- scater::runPCA(aggr_sample_annotation_instance_sce,
+                                                    exprs_values = "logcounts",
+                                                    name = "logcounts_PCA",
+                                                    ncomponents =10,ntop=250)
+
+set.seed(100)
+aggr_sample_annotation_instance_sce <- scater::runPCA(aggr_sample_annotation_instance_sce,
+                                                    exprs_values = "logcounts_trans",
+                                                    name = "logcounts_trans_PCA",
+                                                    ncomponents =10,ntop=250)
+```
+
+The annotation types are separated.
+
+```{r}
+annotation_colors <- DiscretePalette(n=25,palette = "glasbey")
+names(annotation_colors) <- unique(aggr_sample_annotation_instance_sce$annotation_type)
+```
+
+```{r,fig.width=12,fig.height=5}
+plotReducedDim(aggr_sample_annotation_instance_sce,
+               dimred = "logcounts_PCA",
+               colour_by = "annotation_type",
+               shape_by  = "tma")+
+  scale_color_manual(values=annotation_colors)
+
+
+  plotReducedDim(aggr_sample_annotation_instance_sce,
+               dimred = "logcounts_PCA",
+               colour_by = "total_trans")+
+    scale_color_gradient2(trans ="log10")+
+  plotReducedDim(aggr_sample_annotation_instance_sce,
+               dimred = "logcounts_PCA",
+               colour_by = "cell_counts")+
+    scale_color_gradient2(trans ="log10")
+
+
+```
+
+
+```{r,fig.width=10,fig.height=8}
+plotReducedDim(aggr_sample_annotation_instance_sce,
+               dimred = "logcounts_PCA",
+               colour_by = "annotation_type",
+                shape_by  = "tma")+
+  scale_color_manual(values=annotation_colors)+
+  facet_wrap(.~colour_by)+theme_minimal()+
+  theme(legend.position = "None")
+
+```
+
+```{r,fig.width=10,fig.height=8}
+plotReducedDim(aggr_sample_annotation_instance_sce,
+               dimred = "logcounts_trans_PCA",
+               colour_by = "annotation_type",
+               shape_by = "tma")+
+  scale_color_manual(values=annotation_colors)+
+  facet_wrap(.~colour_by)+theme_minimal()+
+  theme(legend.position = "None")
+
+```
+
+
+```{r,fig.width=12,fig.height=5}
+
+
+  plotReducedDim(aggr_sample_annotation_instance_sce,
+               dimred = "logcounts_trans_PCA",
+               colour_by = "total_trans")+
+    scale_color_gradient2(trans ="log10")+
+  plotReducedDim(aggr_sample_annotation_instance_sce,
+               dimred = "logcounts_trans_PCA",
+               colour_by = "cell_counts")+
+    scale_color_gradient2(trans ="log10")
+
+
+```
+
+```{r,fig.width=16,fig.height=8}
+plotReducedDim(aggr_sample_annotation_instance_sce,
+                    dimred = "logcounts_trans_PCA",
+                    colour_by = "annotation_type", 
+               text_by = "annotation_type",
+                    text_colour = annotation_colors,
+                    text_size = 6)+
+  scale_color_manual(values=annotation_colors)+
+  guides(color="none")+
+plotReducedDim(aggr_sample_annotation_instance_sce,
+                    dimred = "logcounts_trans_PCA",
+                    colour_by = "annotation_type", 
+               text_by = "annotation_type",
+               ncomponents = c(1,3),
+                    text_colour = annotation_colors,
+                    text_size = 6)+
+  scale_color_manual(values=annotation_colors)+
+  guides(color="none")
+
+
+```
+
+
+
+```{r}
+# Annika Vannan10:34
+# LINEAGE:
+vascular <- c("artery", "muscularized_artery", "vein", "venule")
+epithelial <- c("epithelial_detachment", "goblet_cell_metaplasia",
+                "hyperplastic_aec", 
+                "interlobular_septum", "large_airway", "microscopic_honeycombing", 
+                "minimally_remodeled_alveoli", "normal_alveoli", "remnant_alveoli",
+                "remodeled_epithelium", "small_airway","smaller_airway","advanced_remodeling")
+
+fibrotic <- c("severe_fibrosis", "fibroblastic_focus")
+other_mesenchymal <- c("airway_smooth_muscle")
+immune <-
+  immune <- c("granuloma", "mixed_inflammation", "TLS")
+other <- c("giant_cell", "multinucleated_cell")
+# EPITHELIAL REGION:
+alveolar <- c("hyperplastic_aec", "interlobular_septum", "minimally_remodeled_alveoli", "normal_alveoli", "remnant_alveoli","advanced_remodeling")
+airway <- c("goblet_cell_metaplasia", "large_airway", "microscopic_honeycombing", "small_airway")
+
+```
+
+## Supplementary figures:
+
+```{r}
+
+p1 = plotReducedDim(aggr_sample_annotation_instance_sce,
+               dimred = "logcounts_trans_PCA",
+               point_size=3,
+               colour_by = "annotation_type")+
+  scale_color_manual(values=annotation_colors)+
+  theme_bw(base_size = 15)+
+  theme(legend.position = 'none',
+        panel.grid.major = element_blank())+
+  guides(colour = guide_legend(override.aes = list(size=3)))+
+  xlab("PC1")+
+  ylab("PC2")
+
+p11 = plotReducedDim(aggr_sample_annotation_instance_sce,
+               dimred = "logcounts_trans_PCA",
+               point_size=3,
+               colour_by = "annotation_type")+
+  scale_color_manual(values=annotation_colors)+
+  theme_minimal(base_size = 12)+
+  theme(legend.position = 'none',
+        strip.text= element_text(size=9),
+        panel.grid.major = element_blank())+
+  facet_wrap(.~colour_by)+
+  xlab("PC1")+
+  ylab("PC2")
+ggsave(p1 ,filename = "output/figures/revisions2024/path_annot/p_annot_pca.pdf",
+       width = 5,height = 5,dpi = 300)
+ggsave(p11 ,filename = "output/figures/revisions2024/path_annot/p_annot_pca_facet.pdf",
+       width = 9,height = 6,dpi = 300)
+```
+
+
+## Using limma,voom for finding DEGs across annotation types
+
+
+### Remained annotation types (21)
+
+```{r}
+unique(aggr_sample_annotation_instance_sce$annotation_type)
+```
+
+## limma DEGs analysis
+
+Testing remodeled_epithelium versus normal_alveoli as an example
+
+Counts are normalized by lib.size (total gene count per annotation instance) then log2 transformed.
+
+```{r}
+annot_group <- aggr_sample_annotation_instance_sce$annotation_type
+tma_group <- aggr_sample_annotation_instance_sce$tma
+design <- model.matrix(~0+annot_group+tma_group)
+
+colnames(design) <- gsub("annot_group", "", colnames(design))
+colnames(design) <- gsub("tma_group", "", colnames(design))
+design[1:4,1:10]
+dim(design)
+
+```
+```{r}
+
+contr.matrix <- makeContrasts(
+   remodeledvsNormal = remodeled_epithelium - normal_alveoli, 
+   minremodeledvsNormal = minimally_remodeled_alveoli - normal_alveoli, 
+   levels = colnames(design))
+head(contr.matrix)
+
+par(mfrow=c(1,2))
+v <- voom(aggr_sample_annotation_instance_sce@assays@data$counts, 
+          design, plot=TRUE)
+vfit <- lmFit(v, design)
+vfit <- contrasts.fit(vfit, contrasts=contr.matrix)
+efit <- eBayes(vfit)
+plotSA(efit, main="Final model: Mean-variance trend")
+```
+
+
+## remove some low genes
+
+Filter out lowly expressed genes
+
+```{r}
+sum(filterByExpr(v$E, min.count = 8,min.prop = 0.5))
+```
+
+```{r}
+#keep_genes <- filterByExpr(v$E,min.count = 8,min.prop = 0.5)
+keep_genes <- filterByExpr(y = v$E,min.count = 8,min.prop = 0.5)
+sum(keep_genes)
+
+annot_group <- aggr_sample_annotation_instance_sce$annotation_type
+design <- model.matrix(~0+annot_group+tma_group)
+
+colnames(design) <- gsub("annot_group", "", colnames(design))
+colnames(design) <- gsub("tma_group", "", colnames(design))
+```
+
+```{r}
+colnames(design)
+```
+
+### generate contrasts that compares each Annotation type to the rest
+
+```{r}
+## generate contrasts()
+genContrs <- function(testing_col ="severe_fibrosis",all_cols = colnames(design)[1:25] ){
+  other_cols <- setdiff(all_cols,testing_col)
+  n_other <- length(other_cols)
+  contr2 <- paste0(other_cols,collapse = "+")
+
+  contr <-  paste0(testing_col, " - ","(",contr2,")/",n_other)
+  contr
+}
+# sapply( colnames(design)[1:21],function(x){
+#   genContrs(x, colnames(design)[1:21])
+# })
+```
+
+```{r}
+
+contr.matrix_all_types <- makeContrasts(contrasts = sapply( colnames(design)[1:25],
+                                                            function(x){
+  genContrs(x, colnames(design)[1:20])
+}), levels = colnames(design))
+
+#contr.matrix_all_types
+#colnames(contr.matrix_all_types)
+colnames(contr.matrix_all_types) <- paste0(colnames(design)[1:25],"_vsRest")
+contr.matrix_all_types[1:3,1:3]
+```
+
+
+Fit linear model and test coefficients of contrasts 
+
+```{r}
+
+par(mfrow=c(1,2))
+v <- voom(aggr_sample_annotation_instance_sce@assays@data$counts[keep_genes,], 
+          design, plot=TRUE)
+vfit <- lmFit(v, design)
+vfit <- contrasts.fit(vfit, contrasts=contr.matrix_all_types)
+efit <- eBayes(vfit)
+plotSA(efit, main="Final model: Mean-variance trend")
+```
+
+```{r}
+duplicateCorrelation(v$E, design = design,
+                     block = aggr_sample_annotation_instance_sce$patient)$consensus.correlation
+```
+
+
+
+Number of DEGs for each annotation type
+
+```{r}
+summary(decideTests(efit))
+```
+
+Find top 100 DEGs with lfc >=1.5
+
+```{r}
+n_contrasts <- ncol(contr.matrix_all_types)
+top.table <- topTable(efit,coef = 1:n_contrasts, p.value = 0.05,
+                      number = 100,lfc = 1.5,
+                      sort.by = "F")
+
+```
+
+
+```{r}
+head(top.table, 20)
+```
+
+```{r}
+write.table(top.table,file = "output/figures/revisions2024/path_annot/top100DEGs_pannot_all.csv")
+```
+
+
+## Heatmap of top 100 DEGs
+
+```{r,fig.width=10,fig.height=14}
+
+set.seed(100)
+heatmap_m <- aggr_sample_annotation_instance_sce@assays@data$logcounts_trans[rownames(top.table),]
+
+# ComplexHeatmap::Heatmap(heatmap_m,show_column_names = FALSE,
+#                         column_labels = aggr_sample_annotation_instance_sce$annotation_type,
+#                         top_annotation = columnAnnotation(df = data.frame(colData(aggr_sample_annotation_instance_sce))[,c("sample",
+#                                                                                                                            "annotation_type")]),
+#                         column_split = aggr_sample_annotation_instance_sce$annotation_type,
+#                         column_title_rot = 90,
+#                          name = "logcounts_trans")
+heatmap_m_scale <- t(scale(t(heatmap_m),scale = T))
+split_hack_title <- aggr_sample_annotation_instance_sce$annotation_type
+# split_hack_title <- gsub("^artery","\nartery",split_hack_title)
+split_hack_title <- gsub("^giant_cell","----giant_cell",split_hack_title)
+split_hack_title <- gsub("^remnant_alveoli","----------------remnant_alveoli",split_hack_title)
+split_hack_title <- gsub("^advanced_remodeling","advanced_remodeling",split_hack_title)
+# 
+
+p_ht_all <- ComplexHeatmap::Heatmap(heatmap_m_scale,show_column_names = FALSE,
+                        column_labels = aggr_sample_annotation_instance_sce$annotation_type,
+                        top_annotation = columnAnnotation(
+                          annotations =
+                            data.frame(colData(aggr_sample_annotation_instance_sce))[,c("annotation_type")],
+                          col = list(annotations = annotation_colors),show_legend = FALSE),
+                        column_split = factor(split_hack_title, levels=unique(split_hack_title)),
+                        column_title_rot = 90,
+                        cluster_column_slices = TRUE,
+                        cluster_columns = TRUE,
+                        column_title_gp = gpar(fontsize =12),
+                        column_gap = unit(1,"mm"),
+                        show_column_dend = FALSE,
+                        heatmap_legend_param =
+                          list( legend_height = unit(4, "cm"),
+                                title_position = "lefttop",
+                                direction = "horizontal"),
+                        row_names_gp = gpar(fontsize =8),
+                         name = "logNorm gene expr\n zscored",
+                            height = unit(9.5, "in"),
+                        width = unit(8,"in"))
+draw(p_ht_all, heatmap_legend_side = "bottom")
+
+```
+```{r}
+pdf("output/figures/revisions2024/path_annot/path_annot_heatmap.pdf",
+    height = 15,width = 10)
+draw(p_ht_all, heatmap_legend_side = "bottom",)
+dev.off()
+```
+
+
+## For epi annotations only
+
+Other epi annotation versus normal alveoli
+
+```{r}
+epithelial_kept <- intersect(epithelial,aggr_sample_annotation_instance_sce$annotation_type)
+epithelial_kept
+
+epi_contrasts <- makeContrasts(contrasts = sapply( epithelial_kept,function(x){
+  genContrs(x, epithelial_kept)
+}), levels = colnames(design))
+#contr.matrix_all_types
+#colnames(contr.matrix_all_types)
+colnames(epi_contrasts) <- paste0(epithelial_kept,"_vsRest")
+epi_contrasts[1:3,1:3]
+```
+
+
+```{r}
+
+par(mfrow=c(1,2))
+v <- voom(aggr_sample_annotation_instance_sce@assays@data$counts[keep_genes,], 
+          design, plot=TRUE)
+
+vfit <- lmFit(v, design)
+vfit <- contrasts.fit(vfit, contrasts=epi_contrasts)
+efit <- eBayes(vfit)
+plotSA(efit, main="Final model: Mean-variance trend")
+```
+
+
+
+```{r}
+summary(decideTests(efit))
+```
+
+```{r}
+top.table <- topTable(efit,coef = 1:length(epithelial_kept), 
+                      p.value = 0.05,number = 100,lfc = 1.5)
+```
+
+```{r}
+head(top.table, 20)
+```
+
+```{r}
+write.table(top.table,file = "output/figures/revisions2024/path_annot/top100DEGs_pannot_epi.csv")
+```
+
+
+```{r,fig.width=12,fig.height=16}
+
+set.seed(100)
+epi_annot_cols <- aggr_sample_annotation_instance_sce$annotation_type %in% epithelial_kept
+
+heatmap_m <- aggr_sample_annotation_instance_sce@assays@data$logcounts_trans[rownames(top.table),
+                                                                       epi_annot_cols]
+
+
+heatmap_m_scale <- t(scale(t(heatmap_m),scale = T))
+
+p_ht_epi <- ComplexHeatmap::Heatmap(heatmap_m_scale,show_column_names = FALSE,
+                        column_labels = aggr_sample_annotation_instance_sce$annotation_type[epi_annot_cols],
+                        top_annotation =
+                          columnAnnotation(
+                            annotations = 
+                            data.frame(
+                              colData(
+                                aggr_sample_annotation_instance_sce[,epi_annot_cols]
+                                ))[,c("annotation_type")],
+                          col = list(annotations = annotation_colors),
+                          show_legend=FALSE),
+                        heatmap_legend_param =
+                          list( legend_height = unit(4, "cm"),
+                                title_position = "lefttop",
+                                direction = "horizontal"),
+                        column_split = aggr_sample_annotation_instance_sce$annotation_type[epi_annot_cols],
+                        column_title_rot = 90,
+                          column_title_gp = gpar(fontsize =11),
+                        row_names_gp = gpar(fontsize =8),
+                        
+                         name = "logNorm gene expr\n zscored",
+                        height = unit(9.5, "in"),
+                        width = unit(6,"in"))
+
+```
+
+```{r}
+pdf("output/figures/revisions2024/path_annot/path_annot_heatmap_epi_only.pdf",
+    height = 13,width = 9)
+draw(p_ht_epi, heatmap_legend_side = "bottom",)
+
+dev.off()
+```
+
+
+
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+

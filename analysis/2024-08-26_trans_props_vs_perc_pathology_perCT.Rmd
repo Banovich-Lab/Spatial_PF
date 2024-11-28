@@ -1,0 +1,328 @@
+---
+title: "2024-08-26_trans_props_vs_perc_pathology_perCT"
+author: "Ruqian Lyu"
+date: "2024-08-26"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+  library(cowplot)
+  library(scater)
+  library(Seurat)
+  library(speckle)
+  library(limma)
+})
+
+```
+
+```{r}
+cell_object_rds_dir <- "../../../Dataset/LFST_2022/REVISION_new_samples_052924/062724_late_IPF_Seurat_and_heatmap/xenium_final_CT_plus_niches_070924.rds"
+cell_object_meta_dir <- "../../../Dataset/LFST_2022/REVISION_new_samples_052924/062724_late_IPF_Seurat_and_heatmap/xenium_final_CT_plus_niches_070924.meta.csv"
+
+#cell_object <- readRDS(cell_object_rds_dir)
+```
+
+```{r}
+# cell_object <- readRDS("xenium_final_CT_plus_niches_070924.rds")
+# cell_expr <- cell_object[["RNA"]]$counts
+# dim(cell_expr)
+# [1]     343 1630319
+# class(cell_expr)
+# [1] "matrix" "array" 
+# saveRDS(cell_expr,"xenium_final_CT_plus_niches_070924_RNA_counts.rds")
+cell_expr <- readRDS("../../../Dataset/LFST_2022/REVISION_new_samples_052924/062724_late_IPF_Seurat_and_heatmap/xenium_final_CT_plus_niches_070924_RNA_counts.rds")
+#cell_object_meta <- cell_object@meta.data
+cell_object_meta <- readr::read_csv(cell_object_meta_dir)
+
+```
+
+
+
+## Pseudobulk per cell type per sample 
+
+
+```{r}
+sample_celltype_levels <-  paste0(as.character(cell_object_meta$sample),"_",
+                                  as.character(cell_object_meta$final_CT))
+
+cell_RNA_expr_perCT <- t(sapply(by(t(cell_expr),sample_celltype_levels,colSums),identity))
+dim(cell_RNA_expr_perCT)
+
+```
+
+```{r}
+getTransformedProps_fromCountM <- function(count_m,transform = "logit"){
+  
+  tab <- count_m
+  props <- tab/rowSums(tab)
+  if (transform == "asin") {
+    message("Performing arcsin square root transformation of proportions")
+    prop.trans <- asin(sqrt(props))
+  }
+  else if (transform == "logit") {
+    message("Performing logit transformation of proportions")
+    props.pseudo <- (tab + 0.5)/rowSums(tab + 0.5)
+    prop.trans <- log(props.pseudo/(1 - props.pseudo))
+  }
+  return(list(Counts = t(tab), TransformedProps = t(prop.trans), 
+              Proportions = t(props)))
+}
+
+```
+
+```{r}
+
+cell_RNA_expr_perCT_prop_trans <- 
+  getTransformedProps_fromCountM(count_m = cell_RNA_expr_perCT,
+                                 transform = "logit")
+```
+
+```{r}
+cell_RNA_expr_perCT_prop_trans$Counts[1:4,1:4]
+cell_RNA_expr_perCT_prop_trans$Proportions[1:4,1:4]
+
+```
+
+```{r}
+hist(cell_RNA_expr_perCT_prop_trans$Proportions)
+#summary(cell_RNA_expr_perCT_prop_trans$Proportions)
+```
+
+
+```{r}
+celltype_levels <- cell_object_meta$final_CT
+cell_expr_count_per1K <- apply(cell_expr,2,function(x){
+  res = x/sum(x)
+  res * 1000
+})
+
+cell_mean_RNA_expr_perCT <- 
+  t(sapply(by(t(cell_expr),
+              sample_celltype_levels,colMeans),identity))
+
+  
+```
+
+
+```{r}
+cell_expr_count_per1K[1:10,1:10]
+```
+
+```{r}
+prop_thresh <- t(sapply(by(t(cell_expr_count_per1K),celltype_levels, 
+                           function(x){
+                colSums(x >= 3)/nrow(x)
+              }),identity))
+
+```
+
+```{r}
+test_gene_prop_thresh <- data.frame(prop_thresh,
+                                    check.names = FALSE) %>% 
+  mutate(final_CT = rownames(prop_thresh)) %>%
+  tidyr::pivot_longer(1:343,
+                      names_to = "gene",
+                      values_to = "prop_cell_expressing_min3")
+
+test_gene_prop_thresh %>% 
+  ggplot() +
+  geom_point(mapping= aes(x=gene,y=prop_cell_expressing_min3))
+  
+```
+
+```{r,fig.width=10}
+test_gene_prop_thresh_filter0.5 <- test_gene_prop_thresh %>% 
+  filter(prop_cell_expressing_min3 >=0.5)
+
+table(test_gene_prop_thresh_filter0.5$final_CT)
+```
+
+
+```{r}
+test_gene_prop_thresh_filter0.3 <- 
+  test_gene_prop_thresh %>% 
+  filter(prop_cell_expressing_min3 >=0.3)
+table(test_gene_prop_thresh_filter0.3$final_CT)
+min(table(test_gene_prop_thresh_filter0.3$final_CT))
+max(table(test_gene_prop_thresh_filter0.3$final_CT))
+
+```
+
+
+
+```{r}
+test_celltypes <- unique(cell_object_meta$final_CT)
+cell_type_levels <- sapply(strsplit(colnames(cell_RNA_expr_perCT_prop_trans$Counts),"_"),`[[`,2)
+
+res_per_ct = list()
+for(each_ct in test_celltypes) {
+ test_genes <- test_gene_prop_thresh_filter0.5 %>%
+   filter(final_CT == each_ct)
+ test_genes <- test_genes$gene
+
+ message(length(test_genes))
+
+  count_m <- cell_RNA_expr_perCT_prop_trans$Counts[test_genes,cell_type_levels %in% each_ct]
+  tran_prop_m <- getTransformedProps_fromCountM(t(count_m))
+  pscores <- cell_object_meta$percent_pathology[match(sapply(strsplit(colnames(tran_prop_m$TransformedProps),"_"),
+                                                             `[[`,1), cell_object_meta$sample )]
+
+  des_pscore <- model.matrix(~pscores)
+
+  fit_cell_RNA_prop <-
+    lmFit(tran_prop_m$TransformedProps,
+          des_pscore)
+
+
+  fit_cell_RNA_prop <- eBayes(fit_cell_RNA_prop, robust=TRUE)
+  res = topTable(fit_cell_RNA_prop,p.value = 1, number = Inf)
+  
+  if(nrow(res) >0 ){
+      res$gene <- rownames(res)
+      res$celltype <- each_ct
+      res_per_ct[[each_ct]] = res
+  }
+}
+```
+
+```{r}
+write.csv( do.call(rbind,res_per_ct),"output/figures/revisions2024/supfig9/perCT_gene_des_filterbymin3_0.5.csv")
+```
+
+
+
+```{r}
+test_celltypes <- unique(cell_object_meta$final_CT)
+cell_type_levels <- sapply(strsplit(colnames(cell_RNA_expr_perCT_prop_trans$Counts),"_"),`[[`,2)
+
+#mixture_filter_df <- do.call(rbind,mixture_filter) 
+ 
+res_per_ct = list()
+for(each_ct in test_celltypes) {
+  #keep.genes_per_ct_mean0.5
+  # test_genes <- q20cut_perCT %>% 
+  #   filter(final_CT == each_ct,
+  #          keep.genes == TRUE)
+  # message(each_ct)
+  # test_genes <- test_genes$gene
+  # message(length(test_genes))
+  # test_genes <- mixture_filter_df %>%
+  #   filter(final_CT == each_ct)
+  # test_genes <- test_genes$gene
+ test_genes <- test_gene_prop_thresh_filter0.3 %>%
+   filter(final_CT == each_ct)
+ test_genes <- test_genes$gene
+
+ message(length(test_genes))
+
+
+  count_m <- cell_RNA_expr_perCT_prop_trans$Counts[test_genes,cell_type_levels %in% each_ct]
+  tran_prop_m <- getTransformedProps_fromCountM(t(count_m))
+  pscores <- cell_object_meta$percent_pathology[match(sapply(strsplit(colnames(tran_prop_m$TransformedProps),"_"),
+                                                             `[[`,1), cell_object_meta$sample )]
+
+  des_pscore <- model.matrix(~pscores)
+
+  fit_cell_RNA_prop <-
+    lmFit(tran_prop_m$TransformedProps,
+          des_pscore)
+
+
+  fit_cell_RNA_prop <- eBayes(fit_cell_RNA_prop, robust=TRUE)
+  res = topTable(fit_cell_RNA_prop,p.value = 1, number = Inf)
+  
+  if(nrow(res) >0 ){
+      res$gene <- rownames(res)
+      res$celltype <- each_ct
+      res_per_ct[[each_ct]] = res
+  }
+}
+```
+
+```{r}
+write.csv( do.call(rbind,res_per_ct),"output/figures/revisions2024/supfig9/perCT_gene_des_filterbymin3_0.3.csv")
+```
+
+
+```{r,warning=FALSE,fig.width=12,fig.height=12}
+cell_niche_df <- read.csv("output/figures/revisions2024/supfig9/perCT_gene_des_filterbymin3_0.3.csv")
+cell_niche_df <- cell_niche_df %>% 
+  mutate(sig = ifelse( adj.P.Val < 0.01 , "sig","nonsig")) %>% 
+  mutate(sig_status = ifelse(logFC < 0,"dn","up")) %>% 
+  mutate(sig_status = paste0(sig, sig_status)) %>% group_by(celltype) %>%
+  mutate(total_sig = sum(adj.P.Val <0.01)) %>%
+  filter(total_sig >0) 
+p0.3 <- cell_niche_df %>%
+  ggplot()+geom_point(mapping = aes(x= logFC, 
+                                    y = -log10(adj.P.Val),
+                                    color= sig_status))+
+  ggrepel::geom_text_repel(data = cell_niche_df[cell_niche_df$adj.P.Val<0.01,],
+                           mapping = aes(x= logFC, y = -log10(adj.P.Val),
+                                         label = gene,
+                                         color = sig_status), 
+                           max.overlaps = 12,
+                           size=3,alpha=1)+
+  facet_wrap(.~celltype,ncol = 6,scales = "free_x")+
+  geom_vline(aes(xintercept = 0),linetype=3)+
+  theme_classic(base_size = 10) + 
+  xlab("Rate of change (logit space) \nalong percent pathology")+
+  geom_hline(yintercept=2,linetype=3)+
+  scale_color_manual(values=c("nonsigdn"="grey",
+                              "nonsigup"="grey",
+                              "sigup"="firebrick4",
+                              "sigdn"="#107DAC"))+
+  ylab("-log10(FDR)")+
+  theme(legend.position = "None",
+        strip.text = element_text(size=12),
+        strip.background = element_blank())
+ggsave("output/figures/revisions2024/supfig9/perCT_gene_des_filterbymin3_0.3.pdf",
+       plot = p0.3,
+       width = 14,height=14)
+```
+
+```{r}
+cell_niche_df <- read.csv("output/figures/revisions2024/supfig9/perCT_gene_des_filterbymin3_0.5.csv")
+cell_niche_df <- cell_niche_df %>% 
+  mutate(sig = ifelse( adj.P.Val < 0.01 , "sig","nonsig")) %>% 
+  mutate(sig_status = ifelse(logFC < 0,"dn","up")) %>% 
+  mutate(sig_status = paste0(sig, sig_status)) %>% group_by(celltype) %>%
+  mutate(total_sig = sum(adj.P.Val <0.01)) %>%
+  filter(total_sig >0) 
+
+p0.5 <- cell_niche_df %>%
+  ggplot()+geom_point(mapping = aes(x= logFC, 
+                                    y = -log10(adj.P.Val),
+                                    color= sig_status))+
+  ggrepel::geom_text_repel(data = cell_niche_df[cell_niche_df$adj.P.Val<0.01,],
+                           mapping = aes(x= logFC, y = -log10(adj.P.Val),
+                                         label = gene,
+                                         color = sig_status), 
+                           max.overlaps = 12,
+                           size=3,alpha=1)+
+  facet_wrap(.~celltype,ncol = 6,scales = "free_x")+
+  geom_vline(aes(xintercept = 0),linetype=3)+
+  theme_classic(base_size = 10) + 
+  xlab("Rate of change (logit space) \nalong percent pathology")+
+  geom_hline(yintercept=2,linetype=3)+
+  scale_color_manual(values=c("nonsigdn"="grey",
+                              "nonsigup"="grey",
+                              "sigup"="firebrick4",
+                              "sigdn"="#107DAC"))+
+  ylab("-log10(FDR)")+
+  theme(legend.position = "None",
+        strip.text = element_text(size=12),
+        strip.background = element_blank())
+ggsave("output/figures/revisions2024/supfig9/perCT_gene_des_filterbymin3_0.5.pdf",
+       plot=p0.5,
+       width = 14,height=14)
+```
+
+
+
+
+

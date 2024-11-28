@@ -1,0 +1,337 @@
+---
+title: "2024-07-10_celltype_prop_vs_perc_pathology"
+author: "Ruqian Lyu"
+date: "2024-07-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+  library(cowplot)
+  library(scater)
+  library(Seurat)
+  library(speckle)
+  library(limma)
+})
+```
+
+## Cell type counts 
+
+```{r}
+cell_object_rds_dir <- "../../../Dataset/LFST_2022/REVISION_new_samples_052924/062724_late_IPF_Seurat_and_heatmap/xenium_final_CT_plus_niches_070924.rds"
+cell_object_meta_dir <- "../../../Dataset/LFST_2022/REVISION_new_samples_052924/062724_late_IPF_Seurat_and_heatmap/xenium_final_CT_plus_niches_070924.meta.csv"
+
+# cell_object <- readRDS(cell_object_rds_dir)
+# readr::write_csv(cell_object@meta.data,cell_object_meta_dir)
+
+cell_object_meta <- readr::read_csv(cell_object_meta_dir,
+                                    num_threads = 3)
+```
+
+## `final_CT`
+
+Number of different celltypes 
+
+```{r}
+unique(cell_object_meta$final_CT)
+```
+
+```{r}
+nuclei_celltype <- cell_object_meta[,c("sample","tma","run",
+                                       "sample_affect","final_CT")]
+sample_final_CT_types <- nuclei_celltype %>% group_by(sample,tma,run,sample_affect,final_CT) %>% 
+  summarise(celltype_count=n()) %>% 
+  tidyr::pivot_wider(names_from = "final_CT",
+                     values_from = celltype_count)
+sample_final_CT_types
+```
+
+```{r}
+
+sample_final_CT_types_matrix <- sample_final_CT_types %>% ungroup() %>%
+  select(!(sample:sample_affect)) %>%
+  mutate_all( ~coalesce(.,0))
+
+sample_final_CT_types_matrix <- as.matrix(sample_final_CT_types_matrix)
+sample_final_CT_types_matrix[1:5,15:19]
+```
+```{r}
+sample_final_CT_types$total_cells <- rowSums(sample_final_CT_types_matrix)
+rownames(sample_final_CT_types_matrix) <- sample_final_CT_types$sample
+```
+
+
+## Construct SCE using cell type counts as an assay
+
+
+```{r}
+final_CT_types_sce <- SingleCellExperiment(assays= 
+                                             list("final_CT_count" = 
+                                                    t(sample_final_CT_types_matrix)))
+final_CT_types_sce
+```
+
+```{r}
+colData(final_CT_types_sce) <- cbind(colData(final_CT_types_sce),
+                                     data.frame(sample_final_CT_types[,c("sample","sample_affect","run","tma")],
+                                                check.names = F))
+final_CT_types_sce
+```
+
+## Number of detected cell types per sample
+
+```{r,fig.width=5}
+
+final_CT_types_sce <- addPerCellQC(final_CT_types_sce,
+                                   assay.type = "final_CT_count")
+final_CT_types_sce$sample_affect <- factor(final_CT_types_sce$sample_affect,
+                                           levels =c("Unaffected","Less Affected",
+                                                     "More Affected"))
+plotColData(final_CT_types_sce,x="sample_affect",
+            y=c("detected"))
+
+```
+
+## Proportion of cell types across sample_affect levels
+
+```{r}
+
+propeller_res <- propeller(clusters = cell_object_meta$final_CT, 
+                           sample = cell_object_meta$sample, 
+                           group = cell_object_meta$sample_affect,
+          transform="logit")
+```
+
+```{r}
+propeller_res
+```
+
+
+```{r,fig.width=12,fig.height=12}
+propeller_res$final_CT <- rownames(propeller_res)
+
+propeller_res$y_pos <- apply(data.frame(propeller_res$PropMean.More.Affected,                      
+                             propeller_res$PropMean.Less.Affected, propeller_res$PropMean.Unaffected),1, max)
+
+propeller_res$label_symbol <- ifelse(propeller_res$FDR < 0.01, "**", 
+                                     ifelse(propeller_res$FDR < 0.05, "*",NA))
+
+celltypeprop_df <- cell_object_meta %>% group_by(final_CT, sample) %>% 
+  summarise(celltype_count = n()) %>% 
+  group_by(sample) %>%
+  mutate(sample_total_cells = sum(celltype_count)) %>%
+  mutate(celltype_prop_in_sample = celltype_count/sample_total_cells) %>%
+  dplyr::left_join(unique(cell_object_meta[,c("sample","sample_affect")]))
+
+propeller_res <- celltypeprop_df %>% left_join(propeller_res,by = c("final_CT")) %>% 
+  group_by(final_CT) %>%
+  summarise(max_pro = max(celltype_prop_in_sample)+0.2*sqrt(var(celltype_prop_in_sample))) %>% 
+  right_join(propeller_res,by = c("final_CT"))
+
+celltypeprop_df %>% mutate(sample_affect = factor(sample_affect,
+                                           levels =c("Unaffected","Less Affected",
+                                                     "More Affected"))) %>%
+  ggplot()+
+  geom_boxplot(mapping = aes(x = final_CT, 
+                             y = celltype_prop_in_sample,
+                             fill = sample_affect))+
+  xlab("Celltypes")+
+  ylab("Celltype proportion") +
+  geom_text(data = propeller_res,mapping = aes( x = final_CT,
+                                                y = max_pro, label = label_symbol),size=8)+
+  theme_bw(base_size = 18)+
+  facet_wrap(.~final_CT,scales = "free",ncol = 5)+
+  theme(strip.background.x = element_blank(),
+        strip.text.x = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing.x = unit(0,"line"),
+        axis.line = element_line(colour = "grey35", linewidth = 1))+
+  scale_fill_manual(values =c("Unaffected" = "cornflowerblue","Less Affected" = "pink",
+                              "More Affected" = "red"))
+```
+
+
+
+```{r}
+final_CT_types_sce$pathology_percent <- cell_object_meta$percent_pathology[match(final_CT_types_sce$sample,
+                                                                                 cell_object_meta$sample)]
+colData(final_CT_types_sce)
+```
+
+```{r,fig.width=16}
+
+data.frame(colData(final_CT_types_sce),check.names = F) %>% 
+  cbind(sample_final_CT_types_matrix) %>%
+  tidyr::pivot_longer(cols = unique(nuclei_celltype$final_CT),
+                      names_to = "final_CT",
+                      values_to = "cell_count") %>%
+  mutate(cell_prop = cell_count/total) %>%
+  ggplot() + geom_point(mapping = aes(x = pathology_percent,
+                                      y = cell_prop,
+                                      color = final_CT)) +
+  geom_smooth(mapping = aes(x = pathology_percent, 
+                          y = cell_prop, color = final_CT))+
+  facet_wrap(.~final_CT,scales = "free_y")+
+  theme_bw(base_size = 15)+
+  theme(legend.position = "None")
+
+```
+
+## Proportion of celltype changes against percent pathology
+
+Exclude cell types that are of low count across samples
+
+```{r}
+
+## remove some cell types
+# filter_ct <- data.frame(sample_final_CT_types_matrix,check.names = F) %>% 
+#   tidyr::pivot_longer(cols = colnames(sample_final_CT_types_matrix),
+#                       names_to = "final_CT",
+#                       values_to = "cell_count") %>% mutate(cell_count_m10 = cell_count >= 100) %>%
+#   group_by(final_CT) %>% summarise(keep_celltype = sum(cell_count_m10,na.rm = T) >= 20) %>% 
+#   filter(!keep_celltype)
+# filter_ct
+
+filter_ct <- data.frame(sample_final_CT_types_matrix,check.names = F) %>% 
+  tidyr::pivot_longer(cols = colnames(sample_final_CT_types_matrix),
+                      names_to = "final_CT",
+                      values_to = "cell_count") %>% mutate(cell_count_m100 = cell_count >= 100) %>%
+  group_by(final_CT) %>% summarise(keep_celltype = sum(cell_count_m100,na.rm = T) >= 10) %>% 
+  filter(!keep_celltype)
+filter_ct
+
+```
+
+
+### Propeller function to transform the proportion
+
+```{r}
+
+nuclei_celltype <- nuclei_celltype[!nuclei_celltype$final_CT %in% filter_ct$final_CT,]
+dim(nuclei_celltype)
+nuclei_celltype
+```
+
+```{r}
+table(nuclei_celltype$sample, nuclei_celltype$final_CT)[1:4,1:4]
+```
+
+getTransformedProp
+
+```{r}
+final_ct_prop_trans <- getTransformedProps(clusters = nuclei_celltype$final_CT, 
+                                           sample = nuclei_celltype$sample,
+                                           transform = "logit")
+```
+
+```{r}
+pscores <- cell_object_meta$percent_pathology[match(colnames(final_ct_prop_trans$Counts),
+                                                      cell_object_meta$sample )]
+
+patient_id <- cell_object_meta$patient[match(colnames(final_ct_prop_trans$Counts), cell_object_meta$sample )]
+sample_name <- cell_object_meta$sample[match(colnames(final_ct_prop_trans$Counts), cell_object_meta$sample )]
+sample_type <- cell_object_meta$sample_type[match(colnames(final_ct_prop_trans$Counts), cell_object_meta$sample )]
+sample_affect <- cell_object_meta$sample_affect[match(colnames(final_ct_prop_trans$Counts), cell_object_meta$sample )]
+
+des_pscore <- model.matrix(~pscores)
+des_pscore
+```
+
+```{r}
+fit <- lmFit(final_ct_prop_trans$TransformedProps,des_pscore)
+fit <- eBayes(fit, robust=TRUE)
+fit_res_logres <- topTable(fit,p.value = 0.01,number = Inf)
+fit_res_logres
+```
+
+```{r}
+fit_res_logres_all <- topTable(fit,p.value = 1,number = Inf)
+fit_res_logres_all
+```
+
+```{r}
+fit_res_logres_all$celltype <- rownames(fit_res_logres_all)
+colnames(fit_res_logres_all)[colnames(fit_res_logres_all) =="logFC"] = "coefficient"
+dir.create("output/manuscripts/revision2024/",recursive = TRUE)
+readr::write_csv(fit_res_logres_all, file = "output/manuscripts/revision2024/celltype_prop_vs_perc_pathology.csv")
+```
+
+
+Fit the linear model on raw proportions to calculate the fold change in the original proportion 
+space for visualization.
+
+```{r}
+fit.prop <- lmFit(final_ct_prop_trans$Proportions,des_pscore)
+fit.prop <- eBayes(fit.prop, robust=TRUE)
+topTable(fit.prop)
+```
+
+```{r}
+head(fit.prop$coefficients)
+```
+
+```{r,fig.width=8,fig.height=8}
+par(mfrow=c(3,3))
+for(i in seq(1,18,1)){
+    plot(pscores, final_ct_prop_trans$Proportions[i,],
+         main = rownames(final_ct_prop_trans$Proportions)[i], 
+        pch=16, cex=2, ylab="Proportions", cex.lab=1.5, cex.axis=1.5,
+        cex.main=2)
+    abline(a=fit.prop$coefficients[i,1], b=fit.prop$coefficients[i,2], col=4, 
+            lwd=2)
+}
+
+```
+
+### Split by positive lfc 
+
+```{r}
+all_sig_c <- topTable(fit,p.value = 0.01,number = Inf)
+pos_c <- rownames(all_sig_c[which(all_sig_c$logFC > 0 ),])
+neg_c <- rownames(all_sig_c[which(all_sig_c$logFC  < 0), ])
+length(pos_c)
+length(neg_c)
+```
+
+
+```{r,fig.width=8,fig.height=8}
+par(mfrow=c(3,3))
+for(i in pos_c){
+    plot(pscores, final_ct_prop_trans$Proportions[i,],
+         main = i, 
+        pch=16, cex=2, ylab="Proportions", cex.lab=1.5, cex.axis=1.5,
+        cex.main=2)
+    abline(a=fit.prop$coefficients[i,1], b=fit.prop$coefficients[i,2], col=4, 
+            lwd=2)
+}
+
+par(mfrow=c(3,3))
+for(i in neg_c){
+    plot(pscores, final_ct_prop_trans$Proportions[i,],
+         main = i, 
+        pch=16, cex=2, ylab="Proportions", cex.lab=1.5, cex.axis=1.5,
+        cex.main=2)
+    abline(a=fit.prop$coefficients[i,1], b=fit.prop$coefficients[i,2], col=4, 
+            lwd=2)
+}
+
+```
+
+```{r}
+fit_res_logres_all %>% ggplot()+
+  geom_point(mapping = aes(x = coefficient,y = -log10(adj.P.Val)))+
+  theme_bw(base_size = 15)
+```
+
+
+
+
+
+

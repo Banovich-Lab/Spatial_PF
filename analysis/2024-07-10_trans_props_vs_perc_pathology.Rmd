@@ -1,0 +1,133 @@
+
+## Pseudobulk gene expression into sample level
+
+Summarize gene counts at sample level 
+
+```{r}
+## code/revisions/trans_counts_per_gene_per_sample.R
+sample_trans_expr <- read.csv("output/manuscripts/revision2024/all_trans_counts_per_sample.csv")
+sample_trans_expr$sample_name <- gsub("_node_meta_gmm12_centroids.csv","",
+                                      sample_trans_expr$sample_name)
+unique(sample_trans_expr$sample_name)
+sample_trans_expr$sample_name[sample_trans_expr$sample_name == "TILD117MF"] = "TILD117MFB"
+
+sample_trans_expr$sample_name <- gsub("_.*","",
+                                      sample_trans_expr$sample_name)
+sample_trans_expr_m <- sample_trans_expr %>% select(!X) %>% 
+  tidyr::pivot_wider(names_from  = sample_name,values_from = Freq)
+
+```
+
+sample-level gene expression aggregation
+```{r}
+sample_trans_expr_m[1:4,1:5]
+```
+
+
+`getTransformedProp` from a count matrix
+
+```{r}
+getTransformedProps_fromCountM <- function(count_m,transform = "logit"){
+  
+  tab <- count_m
+  props <- tab/rowSums(tab)
+  if (transform == "asin") {
+    message("Performing arcsin square root transformation of proportions")
+    prop.trans <- asin(sqrt(props))
+  }
+  else if (transform == "logit") {
+    message("Performing logit transformation of proportions")
+    props.pseudo <- (tab + 0.5)/rowSums(tab + 0.5)
+    prop.trans <- log(props.pseudo/(1 - props.pseudo))
+  }
+  return(list(Counts = t(tab), TransformedProps = t(prop.trans), 
+              Proportions = t(props)))
+}
+```
+
+```{r}
+sample_trans_expr_m[is.na(sample_trans_expr_m)] <- 0 
+sample_trans_expr_m_rowanmes <- sample_trans_expr_m$feature_name
+sample_trans_expr_m <- sample_trans_expr_m %>% select(!feature_name)
+sample_trans_expr_m <- as.matrix(sample_trans_expr_m)
+rownames(sample_trans_expr_m) <- sample_trans_expr_m_rowanmes
+
+cell_RNA_prop_trans  <-  getTransformedProps_fromCountM(count_m = t(as.matrix(sample_trans_expr_m)), 
+                                                        transform = "logit")
+```
+
+```{r}
+pscores <- cell_object_meta$percent_pathology[match(colnames(cell_RNA_prop_trans$Counts), 
+                                                    cell_object_meta$sample )]
+
+patient_id <- cell_object_meta$patient[match(colnames(cell_RNA_prop_trans$Counts), cell_object_meta$sample )]
+sample_name <- cell_object_meta$sample[match(colnames(cell_RNA_prop_trans$Counts), cell_object_meta$sample )]
+sample_type <- cell_object_meta$sample_type[match(colnames(cell_RNA_prop_trans$Counts), cell_object_meta$sample )]
+
+des_pscore <- model.matrix(~pscores)
+des_pscore
+dim(des_pscore)
+```
+
+```{r}
+fit_cell_RNA_prop_logit <- lmFit(cell_RNA_prop_trans$TransformedProps,des_pscore)
+fit_cell_RNA_prop_logit <- eBayes(fit_cell_RNA_prop_logit, robust=TRUE)
+topTable(fit_cell_RNA_prop_logit,p.value = 0.01,number = 10)
+```
+
+Fit raw props to get estimates for plotting
+
+```{r}
+fit.prop <- lmFit(cell_RNA_prop_trans$Proportions,des_pscore)
+fit.prop <- eBayes(fit.prop, robust=TRUE)
+topTable(fit.prop)
+```
+
+```{r}
+head(fit.prop$coefficients)
+```
+
+### Split by positive or neg lfc 
+
+Plot for top 30 DEGs
+
+```{r}
+all_sig_c <- topTable(fit_cell_RNA_prop_logit,p.value = 0.01,number = 30)
+pos_c <- rownames(all_sig_c[which(all_sig_c$logFC > 0 ),])
+neg_c <- rownames(all_sig_c[which(all_sig_c$logFC  < 0), ])
+length(pos_c)
+length(neg_c)
+```
+
+
+```{r,fig.width=8,fig.height=8}
+par(mfrow=c(4,4))
+for(i in pos_c){
+  plot(pscores, cell_RNA_prop_trans$Proportions[i,],
+       main = i, 
+       pch=16, cex=2, ylab="Proportions", cex.lab=1.5, cex.axis=1.5,
+       cex.main=2)
+  abline(a=fit.prop$coefficients[i,1], b=fit.prop$coefficients[i,2], col=4, 
+         lwd=2)
+}
+
+par(mfrow=c(4,4))
+for(i in neg_c){
+  plot(pscores, cell_RNA_prop_trans$Proportions[i,],
+       main = i, 
+       pch=16, cex=2, ylab="Proportions", cex.lab=1.5, cex.axis=1.5,
+       cex.main=2)
+  abline(a=fit.prop$coefficients[i,1], b=fit.prop$coefficients[i,2], col=4, 
+         lwd=2)
+}
+
+```
+
+```{r}
+all_results <- topTable(fit_cell_RNA_prop_logit,
+                        p.value = 1,number = Inf)
+
+all_results$gene <- rownames(all_results)
+readr::write_csv(all_results, file ="output/manuscripts/revision2024/all_trans_prop_changes_vs_perc_pathology.csv")
+```
+

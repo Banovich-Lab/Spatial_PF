@@ -10,39 +10,40 @@ import alphashape
 import shapely
 from pathlib import Path
 from mpl_toolkits.axes_grid1 import ImageGrid
-from zipfile import ZipFile
-from scipy import spatial
+from functools import reduce
+
+# import ray
+# ray.init()
 
 USE_GPU = False
 # These are imported in this way so that some operations can be forced to CPU even when GPU is used for compute
 if USE_GPU:
-    from cucim import skimage as gpu_skimage
+    # from cucim import skimage as gpu_skimage
     import cupy as cp
+    from cupyx.scipy import spatial, ndimage
 
-    sk: gpu_skimage = gpu_skimage
+    # sk: gpu_skimage = gpu_skimage
+    sk: skimage = skimage
     xp: cp = cp
 else:
+    from scipy import spatial, ndimage
     sk: skimage = skimage
     xp: np = np
 
-# Unzip Dataset Function
-def unzip_dataset(path="dataset.zip"):
-    """
-    Unzip dataset into project directory if no dataset exists
-    :param path: str, path to dataset directory
-    """
-    print("[+] Unzipping dataset")
 
-    unzipped_dataset_path = "dataset"
+#Display Settings
+# Create a list of more colors to apply to labels
+cm = plt.get_cmap("tab20b")
+colors = [cm(i) for i in range(cm.N)]
+cm2 = plt.get_cmap("tab20c")
+colors2 = [cm2(i) for i in range(cm2.N)]
+colors.extend(colors2)
 
-    if not os.path.exists(unzipped_dataset_path):
-        os.mkdir(unzipped_dataset_path)
+plt.rcParams["figure.figsize"] = [8, 8]
+# Display Functions
 
-    if len(os.listdir(unzipped_dataset_path)) == 0:
-        with ZipFile(path, "r") as dataset:
-            dataset.extractall(path=unzipped_dataset_path)
 
-def prepare_df_for_annotations(csv_spatial_data_path, arbitrary_scale=2):
+def prepare_df_for_annotations(csv_spatial_data_path):
     """
     Reads csv contents into a data frame, scales centroids, and casts values to
     int.
@@ -50,75 +51,69 @@ def prepare_df_for_annotations(csv_spatial_data_path, arbitrary_scale=2):
     :param arbitrary_scale: int, scale factor for centroids
     :returns df: DataFrame, data frame with scaled int centroids
     """
-    df = pd.read_csv(csv_spatial_data_path)
-
-    df["x_scaled_centroid"] = (df["x_centroid"].values * arbitrary_scale).astype(int)
-    df["y_scaled_centroid"] = (df["y_centroid"].values * arbitrary_scale).astype(int)
-
-    return df
-
-def prepare_df_for_loading_labels(csv_spatial_data_path, arbitrary_scale=2):
-    """
-    Reads csv contents into a data frame, scales mRNA locations, and casts values to
-    int.
-    :param csv_spatial_data_path: str, path to csv file
-    :param arbitrary_scale: int, scale factor for centroids
-    :returns df: DataFrame, data frame with scaled int centroids
-    """
-    df = pd.read_csv(csv_spatial_data_path)
-
-    df["x_loc_int"] = (df["x_location"].values * arbitrary_scale).astype(int)
-    df["y_loc_int"] = (df["y_location"].values * arbitrary_scale).astype(int)
-
-    return df
-
-
-# Transcript To Image Functions
-def load_spatial_data_clust_label(filename: str, label_exclude: list[int, ...] = None, cache: bool = True, recreate: bool = False, genes_include: list[str, ...] = None) -> np.ndarray:
-    """
-    Load a spatial transcriptome file and return a 2D array
-    :param filename: str, input file to be rad with pd.read_csv
-    :param label_exclude: list, which clusters/labels to exclude
-    :param cache: bool, store a .npy of the image for faster loading later
-    :param recreate: bool, overwrite and recreate the cached file
-    :return: xp.xdarray (2D), labelmap of transcripts where value signifies cell
-    cluster number
-    """
-    cache_fname = os.path.splitext(filename)[0] + ".npy"
-
-    if (cache and not os.path.exists(cache_fname)) or recreate:
-        df = pd.read_csv(filename)
-
-        arbitrary_scale: int = 2  # Adjust this to scale the image to get additional 'accuracy' on localization
-
-        df["x_loc_int"] = (df["x_location"].values * arbitrary_scale).astype(int)
-        df["y_loc_int"] = (df["y_location"].values * arbitrary_scale).astype(int)
-
-        # Create a new empty image that is the right size to hold the data
-        img_arr = np.zeros((np.max(df["x_loc_int"]) + 1, np.max(df["y_loc_int"]) + 1)).astype(int)
-
-        if genes_include is not None:
-            print(f"Only keeping specified genes")
-            df = df[df['feature_name'].isin(genes_include)]
-
-        for label in np.unique(df.loc[:, "gmm10_xenium_fullpanel_30ktrained_3NB"]):
-            if label_exclude is not None and label in label_exclude:
-                print(f"[+] Skipping {label}")
-                continue
-
-            # Vectorized image load operation, specify X and Y locations in the slice operation
-            df_match_label = df.loc[df.loc[:, "gmm10_xenium_fullpanel_30ktrained_3NB"] == label, ]
-            img_arr[df_match_label.loc[:,"x_loc_int"], df_match_label.loc[:,"y_loc_int"]] = label
-
-        np.save(cache_fname, img_arr)
+    if type(csv_spatial_data_path) is str:
+        df = pd.read_csv(csv_spatial_data_path)
     else:
-        print("Loading cached file")
-        img_arr = np.load(cache_fname)
+        df = csv_spatial_data_path.copy()
+    x_min = np.min(df["x_location"].values.astype(float))
+    y_min = np.min(df["y_location"].values.astype(float))
+    df = df.dropna(subset=['x_centroid', 'y_centroid'])
+    df["x_loc_int_norelative"] = df["x_location"].values.astype(float) - x_min
+    df["y_loc_int_norelative"] = df["y_location"].values.astype(float) - y_min
+    df["x_loc_int"] = (df["x_loc_int_norelative"]).astype(int)
+    df["y_loc_int"] = (df["y_loc_int_norelative"]).astype(int)
+
+    df["x_scaled_centroid_norelative"] = df["x_centroid"].values.astype(float) - x_min
+    df["y_scaled_centroid_norelative"] = df["y_centroid"].values.astype(float) - y_min
+    df["x_scaled_centroid"] = (df["x_scaled_centroid_norelative"]).astype(int)
+    df["y_scaled_centroid"] = (df["y_scaled_centroid_norelative"]).astype(int)
+
+    return df
 
 
-    return(img_arr)
+def downsize_df(df, percentage):
+    """
+    Downsizes data frame (for testing code more quickly)
+    :param df: DataFrame, spatial data frame
+    :param percentage: int, percentage of cells to use
+    :returns df: DataFrame, downsized data frame
+    """
+    if percentage == 100:
+        return df
+    num_rows = int(len(df) * ((100 - percentage) / 100))
+    rows = df.sample(num_rows)
+    df = df.drop(rows.index)
 
-def load_spatial_data_clust_layer(filename: str, label_exclude: list[int, ...] = None, cache: bool = True, recreate: bool = False) -> np.ndarray:
+    return df
+
+
+def calc_hist_fullsize(filtered_data, output_shape: tuple[int, int] = ()):
+    xmin_out = 0
+    xmax_out = output_shape[0]
+    ymin_out = 0
+    ymax_out = output_shape[1]
+
+    filt_xmin = np.min(filtered_data['x_loc_int'])
+    filt_xmin = filt_xmin if filt_xmin > 0 else 0
+    filt_xmax = np.max(filtered_data['x_loc_int'])
+    filt_ymin = np.min(filtered_data['y_loc_int'])
+    filt_ymin = filt_ymin if filt_ymin > 0 else 0
+    filt_ymax = np.max(filtered_data['y_loc_int'])
+
+    pad_x_l = filt_xmin
+    pad_x_r = xmax_out - filt_xmax
+    pad_y_l = filt_ymin
+    pad_y_r = ymax_out - filt_ymax
+
+    density_filt = sk.exposure.rescale_intensity(
+        np.sqrt(np.histogram2d(filtered_data['x_location'], filtered_data['y_location'],
+                               bins=[filt_xmax - filt_xmin, filt_ymax - filt_ymin], density=True)[0])
+    )
+    out = np.pad(density_filt, ((pad_x_l, pad_x_r), (pad_y_l, pad_y_r)))
+    return out
+
+
+def load_spatial_data_density(filename: str, label_exclude: list[int, ...] = None, cache: bool = True, recreate: bool = False) -> np.ndarray:
     """
     Load a spatial transcriptome file and return a 3D array, first dimension is
     the transcriptional cluster
@@ -126,30 +121,36 @@ def load_spatial_data_clust_layer(filename: str, label_exclude: list[int, ...] =
     :param label_exclude: list, which clusters/labels to exclude
     :param cache: bool, store a .npy of the image for faster loading later
     :param recreate: bool, overwrite and recreate the cached file
-    :return: xp.xdarray (3D), dimensions are the transcriptional cluster, the x
+    :return: xp.xdarray (3D), dimensions are the transcriptional cluster, last slot is the sum, other slots match
     location, and the y location respectively
     """
-    cache_fname = os.path.splitext(filename)[0] + "_layers.npy"
+    cache_fname = os.path.splitext(filename)[0] + "_density.npy"
 
     if (cache and not os.path.exists(cache_fname)) or recreate:
-        df = pd.read_csv(filename)
-
-        arbitrary_scale: int = 2  # Adjust this to scale the image to get additional 'accuracy' on localization
-
-        df["x_loc_int"] = (df["x_location"].values * arbitrary_scale).astype(int)
-        df["y_loc_int"] = (df["y_location"].values * arbitrary_scale).astype(int)
+        # if DEBUG:
+        #     df = prepare_df_for_annotations(downsize_df(pd.read_csv(filename), 10))
+        # else:
+        df = prepare_df_for_annotations(filename)
+        xmin = np.min(df['x_loc_int'])
+        xmin = xmin if xmin > 0 else 0
+        xmax = np.max(df['x_loc_int'])
+        ymin = np.min(df['y_loc_int'])
+        ymin = ymin if ymin > 0 else 0
+        ymax = np.max(df['y_loc_int'])
 
         # Create a new empty image that is the right size to hold the data
-        img_arr = np.zeros((np.max(df["gmm10_xenium_fullpanel_30ktrained_3NB"]), np.max(df["x_loc_int"]) + 1, np.max(df["y_loc_int"]) + 1)).astype(int)
+        img_arr = np.zeros((np.max(df["gmm12"]) + 1, np.max(df["x_loc_int"]), np.max(df["y_loc_int"]))).astype(float)
 
-        for label in np.unique(df.loc[:, "gmm10_xenium_fullpanel_30ktrained_3NB"]):
+        for label in np.unique(df.loc[:, "gmm12"]):
             if label_exclude is not None and label in label_exclude:
                 print(f"Skipping {label}")
                 continue
-
             # Vectorized image load operation, specify X and Y locations in the slice operation
-            df_match_label = df.loc[df.loc[:, "gmm10_xenium_fullpanel_30ktrained_3NB"] == label, ]
-            img_arr[label, df_match_label.loc[:, "x_loc_int"], df_match_label.loc[:,"y_loc_int"]] = 1
+            df_match_label = df.loc[df.loc[:, "gmm12"] == label, ]
+            density = calc_hist_fullsize(df_match_label, (xmax, ymax))
+            img_arr[label, :] = density
+
+        img_arr[-1, :] = calc_hist_fullsize(df, (xmax, ymax))
 
         np.save(cache_fname, img_arr)
     else:
@@ -157,42 +158,59 @@ def load_spatial_data_clust_layer(filename: str, label_exclude: list[int, ...] =
 
         img_arr = np.load(cache_fname)
 
-    return(img_arr)
+    return img_arr
 
 
-# Segmentation Helper Functions
-def mask_with_alpha_shapes(img: np.ndarray) -> np.ndarray:
-    """
-    This function efficiently identifies foreground from background using
-    alphashapes from a binary image where 1 = Foreground. Operation downscales
-    image 10x for processing, and upscales 10x at the end
-    :param img: xp.xdarray (2D), binary labelmap
-    :return: xp.xdarray (2D), binary labelmap with alphashape mask applied
-    """
-    print("[+] Masking points with alpha shapes")
+def fastplot(data):
+    import matplotlib.pyplot as plt
+    import matplotlib as mpl
+    mpl.rcParams['figure.dpi'] = 600
+    plt.figsize=(10.0, 10.0)
+    fig, ax = plt.subplots()
+    # ax.imshow(np.rot90(data), cmap=plt.cm.gist_earth_r,)
+    ax.imshow(data, cmap=plt.cm.gist_earth_r,)
+    # ax.plot(df['x_loc_int'], df['y_loc_int'], 'k.', markersize=0.01)
+    ax.set_xlim([0, data.shape[-1]])
+    ax.set_ylim([data.shape[-2], 0])
+    plt.show()
 
-    pad_size = 500
-    # Pad so that binary_closing doesn't cause weird things on the edges
+
+def get_disk(size: int = 10):
+    if USE_GPU:
+        return cp.asarray(sk.morphology.disk(size))  # Send data to GPU
+    else:
+        return sk.morphology.disk(size)
+
+
+def mask_alphashape_binary(img, alpha: float = 0.1, downscale: int = 2):
+    '''
+    input is a (mostly) closed binary array
+    :param img:
+    :param alpha:
+    :param downscale:
+    :return: binary ndarray of masked shapes
+    '''
+    print("[+] Masking with alphashapes")
+    # img = connect_close_spaces.copy()
+    img = img.astype(bool)
+
+    pad_size = 50
+    # Pad so that edges are handled correctly
     img_pad = xp.pad(img, ((pad_size, pad_size),(pad_size, pad_size)))
-    img_filt = sk.morphology.remove_small_objects(img_pad, 5000)
-    img_filt_closed = sk.morphology.binary_closing(img_filt, sk.morphology.disk(100))
-    img_filt_closed_cleaned = sk.morphology.remove_small_objects(img_filt_closed, 50000)
-    img_labeled = sk.measure.label(img_filt_closed_cleaned)
-    img_downscale_10x = sk.transform.resize(img_labeled, [i // 10 for i in img_labeled.shape],
-                                            order=0, preserve_range=True, anti_aliasing=False).astype(int)
-
-    del img_pad
-    del img_filt
-    del img_filt_closed
-    del img_filt_closed_cleaned
-    # Send to CPU for alphashape
-    if USE_GPU: img_downscale_10x = cp.asnumpy(img_downscale_10x)
+    downscale_factor = downscale  # Increase for speed, decrease for accuracy
+    img_downscale = sk.transform.resize(img_pad, [i // downscale_factor for i in img_pad.shape],
+                                        order=0, preserve_range=True, anti_aliasing=False).astype(int)
+    img_downscale = ndimage.binary_closing(img_downscale, get_disk(5))
+    img_downscale = sk.morphology.remove_small_objects(img_downscale, 100)
+    img_labeled = sk.measure.label(img_downscale)
+    # fastplot(img_labeled)
+    if USE_GPU: img_downscale = cp.asnumpy(img_downscale)
 
     # Split each connected, labeled, object into a different matrix
     label_list = []
     img_list = []
-    for label in range(1, np.max(img_downscale_10x) + 1):
-        individual_obj = img_downscale_10x.copy()
+    for label in range(1, np.max(img_labeled) + 1):
+        individual_obj = img_labeled.copy()
         individual_obj[individual_obj != label] = 0
         img_list.append(individual_obj)
         # mask is a 2D boolean np.array containing the segmentation result
@@ -200,7 +218,7 @@ def mask_with_alpha_shapes(img: np.ndarray) -> np.ndarray:
         contour_y, contour_x = np.where(contour_img)
         label_list.append((contour_y, contour_x))
 
-    img_out = np.zeros(img_downscale_10x.shape, dtype=bool)
+    img_out = np.zeros(img_downscale.shape, dtype=bool)
 
     for label_idx, labelmask in enumerate(label_list):
         points = np.array([labelmask[0], labelmask[1]]).T
@@ -209,7 +227,7 @@ def mask_with_alpha_shapes(img: np.ndarray) -> np.ndarray:
         # At worst (alpha = 0), this uses the convex hull of the connected object
         # At best, this is a close approximation of the shape
         iter_step = 0.01
-        alpha = 0.05
+        alpha = alpha  # Starting at 0.1, airways are bigger than whole tissues
         alpha_shape = alphashape.alphashape(points, alpha)
         in_img = img_list[label_idx] > 0
 
@@ -222,18 +240,45 @@ def mask_with_alpha_shapes(img: np.ndarray) -> np.ndarray:
 
         # Create a mask from the polygon, not implemented for GPU
         # Create a mask from the polygon, not implemented for GPU
-        raster_mask = skimage.draw.polygon2mask(img_downscale_10x.shape, np.asarray(list(zip(*alpha_shape.exterior.xy))))
+        raster_mask = skimage.draw.polygon2mask(img_downscale.shape, np.asarray(list(zip(*alpha_shape.exterior.xy))))
         raster_mask = np.bitwise_or(raster_mask, in_img)  # Make sure we don't drop anything
-        img_out = np.bitwise_or(img_out, raster_mask) # Assemble all objects into the final mask
+        img_out = np.bitwise_or(img_out, raster_mask)  # Assemble all objects into the final mask
 
     # Resize output
     if USE_GPU: img_out = cp.asarray(img_out) # Return to GPU for downstream if needed
-    scaleup = sk.transform.resize(img_out, img_labeled.shape,
+    scaleup = sk.transform.resize(img_out, img_pad.shape,
                                   order=0, preserve_range=True, anti_aliasing=False).astype(bool)
 
     scaleup = scaleup[pad_size:-pad_size, pad_size:-pad_size]
 
     return scaleup
+
+
+def segment_airways(spatial_data, airway_cluster = 6):
+    """
+    Draws alphashape around airways so that they are always enclosed
+    :param spatial_data: xp.xdarray (2D), spatial data for a singular image
+    :return: xp.xdarray (2D), mask of airway tissue and lumen
+    """
+
+    if USE_GPU:
+        only_airway = cp.asarray(spatial_data[airway_cluster, :]) # Send data to GPU
+    else:
+        only_airway = spatial_data[airway_cluster, :]
+
+    blur = sk.exposure.rescale_intensity(sk.filters.gaussian(only_airway, sigma = 5))
+
+    closed = ndimage.grey_closing(blur, footprint = get_disk(10))
+    binarize = closed > 0.15
+    small_objects_removed = sk.morphology.remove_small_objects(binarize, 2500)
+
+    masked_airway = mask_alphashape_binary(small_objects_removed, alpha=1, downscale=2)
+    eroded = ndimage.binary_erosion(masked_airway, get_disk(15))
+    masked = np.bitwise_or(eroded, small_objects_removed)
+    presumed_lumen = np.bitwise_and(masked, np.invert(ndimage.binary_erosion(masked, get_disk(50))))
+
+    return presumed_lumen, masked, masked_airway
+
 
 def remove_too_large(labeled, size_threshold=2000000):
     """
@@ -251,123 +296,116 @@ def remove_too_large(labeled, size_threshold=2000000):
     return labeled
 
 
-def segment_airways(spatial_data):
-    """
-    Segments airways seperately
-    :param spatial_data: xp.xdarray (2D), spatial data for a singular image
-    :return: xp.xdarray (2D), mask of airway tissue and lumen
-    """
-    print("[+] Segmenting airways")
-
-    if USE_GPU: spatial_data = cp.asarray(spatial_data) # Send data to GPU
-
-    only_airway = xp.where(spatial_data == 1, 1, 0)
-    dialated = sk.morphology.binary_dilation(only_airway, sk.morphology.disk(10))
-    small_objects_removed = sk.morphology.remove_small_objects(dialated, 60)
-    masked_airway = mask_with_alpha_shapes(small_objects_removed)
-    dilated_again = sk.morphology.binary_dilation(masked_airway, sk.morphology.disk(10))
-
-    inverted = xp.invert(dilated_again)
-    labeled = sk.measure.label(inverted)
-
-    labeled = xp.where(labeled > 1, 1, 0)
-    masked_airway = xp.bitwise_or(labeled, masked_airway)
-
-    # Erosion is 15 not 20 to compensate for the erosion step in the main pipline, will change to variable
-    masked_airway = sk.morphology.binary_erosion(masked_airway, sk.morphology.disk(15))
-
-    inverted_only_airway = xp.invert(dialated)
-
-    lumen = xp.bitwise_and(inverted_only_airway, masked_airway)
-
-    return lumen
-
-
-def expand_fibroblasts(spatial_data, dialation):
+def expand_fibroblasts(spatial_data, dialation = 10, fibroblast_clusts: list[int, int] | None = None) -> list[np.ndarray, ...]:
     """
     Expand signals from fibroblasts (clusters 5 and 6)
     :param spatial_data: xp.xdarray (2D), spatial data for a singular image
     :param dialation: sk.morphology footprint for dialation shape and size
-    :return: xp.xdarray (2D), image with expanded fibroblasts alone
+    :param fibroblast_clusts: list of clusters
+    :return: list of xp.array with n corresponding in n clusters
     """
-    print("[+] Expanding fibroblasts")
+    if fibroblast_clusts is None:
+        return spatial_data
 
-    if USE_GPU: spatial_data = cp.asarray(spatial_data) # Send data to GPU
+    out = []
+    for clust in fibroblast_clusts:
+        if USE_GPU:
+            only_selected = cp.asarray(spatial_data[clust, :]) # Send data to GPU
+        else:
+            only_selected = spatial_data[clust, :]
 
-    only_fibroblasts = xp.where((spatial_data == 5) | (spatial_data == 6), 1, 0)
+        blur = sk.exposure.rescale_intensity(sk.filters.gaussian(only_selected, sigma = 15))
+        closed = ndimage.grey_dilation(blur, footprint = get_disk(dialation))
+        binarize = closed > 0.15
+        out.append(ndimage.binary_closing(binarize, get_disk(dialation)))
 
-    expanded_fibroblasts = sk.morphology.binary_dilation(only_fibroblasts, dialation)
+    return out
 
-    return expanded_fibroblasts
 
 # Segmention Pipeline
-def run_segmentation(spatial_data: np.ndarray) -> list[np.ndarray, ...]:
+def run_segmentation(spatial_data: np.ndarray) -> tuple[np.ndarray, tuple[np.ndarray]]:
     """
     Run segmentation on spatial data
     :param spatial_data: xp.xdarray, spatial data for a singular image
     :return: list, list of labelmaps (xp.xdarray) from each step in segmentation
     pipeline
     """
+    # spatial_data = image_array.copy()
     print("[+] Running segmentation")
+    airway_cluster = 6
+    fb_clusts = [8, 5]
+    immune_clust = 7
 
-    initial = spatial_data.astype(int)
+    print("[+] Segmenting airways")
+    airways = segment_airways(spatial_data, airway_cluster = airway_cluster)
 
-    expanded_fibroblasts = expand_fibroblasts(initial, sk.morphology.disk(10))
-    binarized = initial > 0
+    print("[+] Expanding fibroblasts")
+    bigger_fibroblasts = expand_fibroblasts(spatial_data, dialation=20, fibroblast_clusts = fb_clusts)
 
-    if USE_GPU: binarized = cp.asarray(binarized)
+    all_others_noimmune = np.delete(spatial_data, [airway_cluster, *fb_clusts, immune_clust], axis = 0)
+    merged = np.sum(all_others_noimmune, axis=0)
+    blur = sk.exposure.rescale_intensity(sk.filters.gaussian(merged, sigma = 10))
 
-    expanded_fibroblasts_binary = xp.bitwise_or(expanded_fibroblasts, binarized)
-    closed_one = sk.morphology.binary_closing(expanded_fibroblasts_binary, sk.morphology.disk(4))
-    dialated_one = sk.morphology.binary_dilation(closed_one, sk.morphology.square(5))
-    small_objects_removed = sk.morphology.remove_small_objects(dialated_one, 60)
-    dilated_two = sk.morphology.binary_dilation(small_objects_removed, sk.morphology.square(5))
-    closed_two = sk.morphology.binary_closing(dilated_two, sk.morphology.disk(5))
+    all_dialation = 5  # The bigger this is, the more 'merged' things will be, but smaller airspaces get split
+    closed = ndimage.grey_dilation(blur, footprint = get_disk(all_dialation))
+    binarize_all = closed > 0.15
 
-    airway_lumens = segment_airways(initial)
-    inverse_airway_lumens = xp.invert(airway_lumens)
-    closed_with_segmented_airways = xp.bitwise_and(closed_two, inverse_airway_lumens)
+    print("[+] Combining masks")
+    binarize_all_together = reduce(lambda x, y: np.bitwise_or(x, y), [binarize_all, airways[0], *bigger_fibroblasts])
 
-    foreground_cleaned = sk.morphology.remove_small_objects(closed_with_segmented_airways, 200)
-    background_cleaned = sk.morphology.remove_small_holes(foreground_cleaned, 200)
-    eroded = sk.morphology.binary_erosion(background_cleaned, sk.morphology.disk(5))
-    small_spaces_removed = sk.morphology.remove_small_holes(background_cleaned, 400)  # Set lower bound on size of airspace
+    foreground_cleaned = sk.morphology.remove_small_objects(binarize_all_together, 1000)
+    background_cleaned = sk.morphology.remove_small_holes(foreground_cleaned, 250)
 
-    mask = mask_with_alpha_shapes(small_spaces_removed)
-    inverse_mask = xp.invert(mask)
-    dialated_inverse_mask = sk.morphology.binary_dilation(inverse_mask, sk.morphology.disk(15))
-    background_masked = xp.bitwise_or(small_spaces_removed, dialated_inverse_mask)
+    connect_close_spaces = ndimage.binary_erosion(background_cleaned, get_disk(5))
+    # fastplot(connect_close_spaces)
+    # connect_close_spaces = background_cleaned
+    mask = mask_alphashape_binary(connect_close_spaces, downscale=10, alpha=0.03)
+    mask_erode = ndimage.binary_erosion(mask, get_disk(25))
+    inverse_mask = xp.invert(mask_erode)
+
+    background_masked = xp.bitwise_or(connect_close_spaces, inverse_mask)
 
     inverted = xp.invert(background_masked)
     labeled = sk.measure.label(inverted)
+    print("[+] Labeling mask")
+    labeled_dialated = ndimage.maximum_filter(labeled, 15)
+    labeled_dialated[labeled != 0] = labeled[labeled != 0]
 
-    too_large_removed = labeled
+    labeled_airways = sk.morphology.label(np.logical_or(airways[1], airways[2]))
+    labeled_updated_airway = labeled_dialated.copy()
+    if len(np.unique(labeled_airways)) > 1:
+        print("[+] Updating airway masks")
+        for airway in np.unique(labeled_airways)[1:]:
+            select_airway_mask = labeled_airways.copy()
+            select_airway_mask[np.where(labeled_airways != airway)] = 0
+            select_airway_mask = ndimage.binary_erosion(select_airway_mask.astype(bool), get_disk(15))
+            labs_in_airway = labeled_dialated.copy()
+            labs_in_airway[np.invert(select_airway_mask.astype(bool))] = 0
 
-    if USE_GPU: too_large_removed = cp.asnumpy(too_large_removed)
-
-    colored = skimage.color.label2rgb(too_large_removed, colors = colors)  # Don't run this on GPU, needs too much memory
-
-
-    if USE_GPU:
-        return [initial, background_masked.get(), inverted.get(),
-                labeled.get(), colored]
+            labs = labs_in_airway[labs_in_airway != 0]
+            counts = np.bincount(labs)
+            if len(counts) > 0:
+                most_common_label = np.argmax(counts)
+                # Binary dialate, then apply same label to all
+                dialated_mask = ndimage.binary_dilation(labs_in_airway.astype(bool), get_disk(10))
+                mask_label_merge = np.bitwise_or(select_airway_mask, dialated_mask)
+                mask_label_merge = ndimage.binary_erosion(mask_label_merge, get_disk(5))
+                labeled_updated_airway[mask_label_merge] = most_common_label
+        final_out = labeled_updated_airway
+        # fastplot(final_out)
     else:
-        return [initial, binarized, expanded_fibroblasts_binary,
-                closed_one, dialated_one, small_objects_removed,
-                dilated_two, closed_two, closed_with_segmented_airways, foreground_cleaned,
-                background_cleaned, eroded, background_masked, inverted,
-                labeled, colored]
+        final_out = labeled_dialated
+    print("[+] Creating color image")
+    colored = skimage.color.label2rgb(final_out, colors=colors)  # Don't run this on GPU, needs too much memory
 
-#Display Settings
-# Create a list of more colors to apply to labels
-cm = plt.get_cmap("tab20b")
-colors = [cm(i) for i in range(cm.N)]
-cm2 = plt.get_cmap("tab20c")
-colors2 = [cm2(i) for i in range(cm2.N)]
-colors.extend(colors2)
+    return (final_out, (airways, bigger_fibroblasts, all_others_noimmune,
+                        merged, blur, binarize_all_together,
+                        foreground_cleaned, background_cleaned,
+                        background_masked, labeled, labeled_dialated, labeled_updated_airway,
+                        colored))
 
-plt.rcParams["figure.figsize"] = [8, 8]
-# Display Functions
+
+
 def display_all(subplots, filename = None):
     """
     Display all steps of processing in a table (designed to assist parameter tuning)
@@ -379,6 +417,11 @@ def display_all(subplots, filename = None):
     figure = plt.figure(figsize=(12, 12), dpi=300)
     grid = ImageGrid(figure, 111, nrows_ncols=(4, 4), axes_pad=0.3)
 
+    # (airways, bigger_fibroblasts, all_others_noimmune,
+    #  merged, blur, binarize_all_together,
+    #  foreground_cleaned, background_cleaned, connect_close_spaces,
+    #  background_masked, labeled, labeled_dialated, labeled_updated_airway,
+    #  colored)
     names = ["Initial", "Binarized", "Expanded Fibroblasts", "Closed (1)", "Dilated (1)", "Remove Small Objects",
              "Dilated (2)", "Closed (2)", "Segmented Airways", "Foreground Cleaned",
              "Background Cleaned", "Eroded", "Background Masked", "Inverted",
@@ -415,6 +458,7 @@ def display(image, name="", size=(12, 12), filename=None):
 
     # plt.show()
 
+
 def visualize_cells_assigned_array(cells_assigned, name="Cells Assigned", size=(12, 12), dilation=10, filename=None, dpi=300):
     """
     Display an image of cells labeled by airspace affiliation
@@ -423,6 +467,7 @@ def visualize_cells_assigned_array(cells_assigned, name="Cells Assigned", size=(
     :param dilation: int, amount to grow cells in image for better visualization
     :param filename: str, name of file to save image to
     """
+    if USE_GPU: cells_assigned = cp.asarray(cells_assigned)
     cells_assigned = sk.morphology.dilation(cells_assigned, sk.morphology.disk(dilation))
 
     if USE_GPU: cells_assigned = cp.asnumpy(cells_assigned)
@@ -432,7 +477,7 @@ def visualize_cells_assigned_array(cells_assigned, name="Cells Assigned", size=(
     display(colored, name, size, filename)
 
 
-def visualize_cells_assigned(spatial_data, shape, name="Cells Assigned", size=(12, 12), dilation=10, filename=None, dpi = 300):
+def visualize_cells_assigned(spatial_data, name="Cells Assigned", size=(12, 12), dilation=10, filename=None, dpi = 300):
     """
     Prepares a cells_assigned xp.xdarray from csv data or a df to be passed into
     visualize_cells_assigned_array function for displaying.
@@ -443,64 +488,19 @@ def visualize_cells_assigned(spatial_data, shape, name="Cells Assigned", size=(1
     visible when displayed
     :param filename: name of file to save image to
     """
-    if type(spatial_data) is str:
-        df = prepare_df(spatial_data).copy()
-    else:
-        df = spatial_data.copy()
-        arbitrary_scale = 2
-        df["x_scaled_centroid"] = (df["x_centroid"].values * arbitrary_scale).astype(int)
-        df["y_scaled_centroid"] = (df["y_centroid"].values * arbitrary_scale).astype(int)
 
-    cells_assigned = xp.zeros(shape, dtype=df['lumen_id'].dtype)
+    df = prepare_df_for_annotations(spatial_data).copy()
+    df = df.dropna(subset=['x_centroid', 'y_centroid'])
+    df = df.drop_duplicates(subset='cell_id')
+    array_shape = (np.max(df['x_scaled_centroid'])  + 1, np.max(df['y_scaled_centroid']) + 1)
+    cells_assigned = xp.zeros(array_shape, dtype=df['lumen_id'].dtype)
 
     cells_assigned[df['x_scaled_centroid'], df['y_scaled_centroid']] = df['lumen_id']
 
     visualize_cells_assigned_array(cells_assigned, name, size, dilation, filename)
 
-# Cell Annotation Functions
-def calculate_distances(points1, points2):
-    """
-    Calculates all disances between two sets of points
-    :param points1: xp.xdarray (2D), list of points of cells
-    :param points2: xp.xdarray (2D), list of points in airspace
-    :returns distances: xp.xdarray (2D), matrix of distances shape (N1, N2);
-    each element represents the distance between a point in points1 and a
-    point in points2
-    """
-    diff = points1[:, None, :] - points2[None, :, :]
-    distances = xp.linalg.norm(diff, axis=-1)
 
-    return distances
-
-def process_batch(x_scaled_centroid, y_scaled_centroid, segmented, distance_threshold):
-    """
-    Assigns cells in provided batch with label of closest airspace within or at
-    30px.
-    :param x_scaled_centroid: list, list of all centroid x locations
-    :param y_scaled_centroid: list, list of all centroud y locations
-    :param segmented: xp.xdarray (2D), segmented labelmap
-    :param distance_threshold: int, max distance from airspace allowed for the
-    transcript to be assigned that airspace id
-    :returns assignments: xp.xdarray (1D), list where each index corsponds to a cell
-    in the batch, and each value is an airspace label
-    """
-    segment_labels = xp.unique(segmented)[1:]
-    label_distances = xp.empty((0, len(x_scaled_centroid)))
-
-    for label in segment_labels:
-        points = xp.argwhere(segmented == label)
-        distances = calculate_distances(xp.stack([x_scaled_centroid, y_scaled_centroid], axis=-1), points)
-        min_distances = xp.min(distances, axis=1)
-        label_distances = xp.vstack((label_distances, min_distances))
-
-    closest_label = xp.argmin(label_distances, axis=0) + 1
-    closest_distance = xp.min(label_distances, axis=0)
-    distance_mask = closest_distance <= distance_threshold
-    assignments = closest_label * distance_mask
-
-    return assignments
-
-def annotate_cells(csv_spatial_data_path, segmented, distance_threshold=30, percent_of_df=100):
+def annotate_cells(csv_spatial_data_path, segmented, distance_threshold=20):
     """
     Takes dataframe with spatial data, calculates each transcripts distance to
     the closest airpace, assigns that transcript an airspace label if that
@@ -514,12 +514,15 @@ def annotate_cells(csv_spatial_data_path, segmented, distance_threshold=30, perc
     :returns df: DataFrame, data frame with cells assigned in "airspace_id" column
     """
     print("[+] Running cell annotation")
-
+    # segmented = segmented[-2].copy()
+    # image_path, segmented[-2], 30, 100
+    # csv_spatial_data_path = image_path
+    # distance_threshold=30
+    # percent_of_df=10
     df = prepare_df_for_annotations(csv_spatial_data_path)
+    np.max(df["x_scaled_centroid"])
     defined_df = df.dropna(subset=['x_centroid', 'y_centroid'])
     unique_df = defined_df.drop_duplicates(subset='cell_id').copy()
-
-    unique_df = downsize_df(unique_df, 100)
 
     # Pad image to account for rounding in centroid location?
     pad_x = (np.max(unique_df["x_scaled_centroid"]) + 1) - segmented.shape[0]
@@ -536,12 +539,10 @@ def annotate_cells(csv_spatial_data_path, segmented, distance_threshold=30, perc
     else:
         np_segmented = segmented
     max_dist = distance_threshold
-    arbitrary_scale = 2
-    np_segmented_realzise = skimage.transform.resize(np_segmented, (i // arbitrary_scale for i in segmented.shape),
-                                                     order=0, preserve_range=True, anti_aliasing=False)
+
     # Grabbing metrics for each lumen
     props_table = skimage.measure.regionprops_table(
-        np_segmented_realzise,
+        np_segmented,
         properties=('area',
                     'area_filled',
                     'axis_major_length',
@@ -553,6 +554,7 @@ def annotate_cells(csv_spatial_data_path, segmented, distance_threshold=30, perc
     )
     props_table_df = pd.DataFrame.from_dict(props_table)
 
+    print("[+] Finding label of neighboring lumens")
     lumen_id_list = []
     lumen_dist = []
     for i in range(unique_df.shape[0]):
@@ -570,6 +572,9 @@ def annotate_cells(csv_spatial_data_path, segmented, distance_threshold=30, perc
         if x_max > np_segmented.shape[1]: x_max = np_segmented.shape[0]
         if y_max > np_segmented.shape[0]: y_max = np_segmented.shape[1]
 
+        if x_min < 0: x_min = 0
+        if y_min < 0: y_min = 0
+
         search_area = np_segmented[x_min:x_max, y_min:y_max]
         has_marker = np.sum(search_area)
 
@@ -582,7 +587,7 @@ def annotate_cells(csv_spatial_data_path, segmented, distance_threshold=30, perc
             if distance <= max_dist:
                 px_color = search_area[coords[index[0]]]
                 lumen_id_list.append(px_color)
-                lumen_dist.append(distance[0] / arbitrary_scale)
+                lumen_dist.append(distance[0])
             else:
                 lumen_id_list.append(0)
                 lumen_dist.append(0)
@@ -590,70 +595,49 @@ def annotate_cells(csv_spatial_data_path, segmented, distance_threshold=30, perc
             lumen_id_list.append(0)
             lumen_dist.append(0)
 
+    print("[+] Merging IDs into dataframe")
     unique_df['lumen_id'] = lumen_id_list
     unique_df['lumen_dist'] = lumen_dist
-    df_merge = df.merge(unique_df[['cell_id', 'lumen_id']], on='cell_id', how='left')
+    df_orig = pd.read_csv(csv_spatial_data_path)
+    df_merge = df_orig.merge(unique_df[['cell_id', 'lumen_id']], on='cell_id', how='left')
     df_merge2 = df_merge.merge(props_table_df, right_index=True, left_on = 'lumen_id', how='left')
-    columns_to_remove = ['x_scaled_centroid', 'y_scaled_centroid', 'x_loc_int', 'y_loc_int']
+    columns_to_remove = ['x_scaled_centroid', 'y_scaled_centroid', 'x_loc_int', 'y_loc_int',
+                         'x_loc_int_norelative', 'y_loc_int_norelative',
+                         'x_scaled_centroid_norelative', 'y_scaled_centroid_norelative']
     return df_merge2.loc[:, ~df_merge2.columns.isin(columns_to_remove)]
 
 
-def prepare_df(csv_spatial_data_path, arbitrary_scale=2):
-    """
-    Reads csv contents into a data frame, scales centroids, and casts values to
-    int.
-    :param csv_spatial_data_path: str, path to csv file
-    :param arbitrary_scale: int, scale factor for centroids
-    :returns df: DataFrame, data frame with scaled int centroids
-    """
-    df = pd.read_csv(csv_spatial_data_path)
-
-    df["x_scaled_centroid"] = (df["x_centroid"].values * arbitrary_scale).astype(int)
-    df["y_scaled_centroid"] = (df["y_centroid"].values * arbitrary_scale).astype(int)
-
-    return df
-
-
-def downsize_df(df, percentage):
-    """
-    Downsizes data frame (for testing code more quickly)
-    :param df: DataFrame, spatial data frame
-    :param percentage: int, percentage of cells to use
-    :returns df: DataFrame, downsized data frame
-    """
-    if percentage == 100:
-        return df
-    num_rows = int(len(df) * ((100 - percentage) / 100))
-    rows = df.sample(num_rows)
-    df = df.drop(rows.index)
-
-    return df
-
-
-base_path = sys.argv[1]
-all_images = glob.glob(f"{base_path}/*.csv")
 
 suffix_out = "out"
-
+# @ray.remote
 def run_image(image_path):
     print(f"Running {image_path}")
-    folder = str(Path(image_path).parent)
-    fname = str(Path(image_path).name)
-    if not os.path.exists(f"{folder}/{suffix_out}/"):
-        os.makedirs(f"{folder}/{suffix_out}/")
-    if os.path.exists(f"{folder}/{suffix_out}/{fname[:-8]}_annotated_{suffix_out}.csv.gz"):
-        print(f"Skipping:: {folder}/{suffix_out}/{fname[:-8]}_annotated_{suffix_out}.csv.gz")
-        return
-    image = load_spatial_data_clust_label(image_path, label_exclude=[9, 2],
-                                          cache=False, recreate = True)
-    segmented = run_segmentation(image)
-    display(segmented[-1], filename = f"{folder}/{suffix_out}/{fname[:-8]}_segment_{suffix_out}.png")
-    df = annotate_cells(image_path, segmented[-2], 30, 100)
-    df.to_csv(f"{folder}/{suffix_out}/{fname[:-8]}_annotated_{suffix_out}.csv.gz", index=False)
-    visualize_cells_assigned(df, segmented[-2].shape, "Cells Assigned", (12, 12), 10, f"{image_path[:-8]}_cells_{suffix_out}.png")
-
-for image_path in all_images:
     try:
-        run_image(image_path)
+        folder = str(Path(image_path).parent)
+        fname = str(Path(image_path).name)
+        if not os.path.exists(f"{folder}/{suffix_out}/"):
+            os.makedirs(f"{folder}/{suffix_out}/")
+        if os.path.exists(f"{folder}/{suffix_out}/{fname[:-4]}_cells_{suffix_out}.png"):
+            print(f"Skipping:: {folder}/{suffix_out}/{fname[:-4]}_annotated_{suffix_out}.csv.gz")
+            return
+        image_array = load_spatial_data_density(image_path, cache=True)
+        visualize_cells_assigned_array(image_array[-1] * 255, dilation = 1, filename = f"{folder}/{suffix_out}/{fname[:-4]}_all_{suffix_out}.png", name = "Transcripts")
+                                       # name=f"Transcripts. Sum = {np.sum(image_array[-1])}, Mean = {np.mean(image_array[-1])}, stdev = {np.std(image_array[-1])}")
+
+        segmented = run_segmentation(image_array)
+        # Save the whole image output
+        display(segmented[1][-1], filename = f"{folder}/{suffix_out}/{fname[:-4]}_segment_{suffix_out}.png")
+        df = annotate_cells(image_path, segmented[0], 20)
+        # out_fname = f"{folder}/{suffix_out}/{fname[:-8]}_annotated_{suffix_out}.csv"
+        df.to_csv(f"{folder}/{suffix_out}/{fname[:-4]}_annotated_{suffix_out}.csv.gz", index=False)
+        visualize_cells_assigned(df, "Cells Assigned", (12, 12), 5, f"{folder}/{suffix_out}/{fname[:-4]}_cells_{suffix_out}.png")
     except Exception as e:
-        print(e)
+        print(f"Error: {e}")
+
+
+
+base_path = "/data/aspera/new dataset jun 2024/upload_for_lumen_seg_June2024/"
+all_images = glob.glob(f"{base_path}/*.csv")
+
+for path in all_images:
+    run_image(path)

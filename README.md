@@ -1,4 +1,4 @@
-## Image-based spatial transcriptomics identifies molecular niche dysregulation associated with distal lung remodeling in pulmonary fibrosis
+## Spatial transcriptomics identifies molecular niche dysregulation associated with distal lung remodeling in pulmonary fibrosis
 
 Annika Vannan<sup>1,a</sup>, Ruqian Lyu<sup>2,3,4,a</sup>, Arianna L. Williams<sup>1</sup>, Nicholas M. Negretti<sup>5</sup>, Evan D. Mee<sup>1</sup>, Joseph Hirsh<sup>5</sup>, Samuel Hirsh<sup>5</sup>, Niran Hadad<sup>1</sup>,
 David S. Nichols<sup>6</sup>, Carla L. Calvi<sup>6</sup>, Chase J. Taylor<sup>6</sup>, Vasiliy. V. Polosukhin<sup>6</sup>, Ana PM Serezani<sup>6</sup>, A. Scott McCall<sup>6</sup>, Jason J. Gokey<sup>6</sup>, 

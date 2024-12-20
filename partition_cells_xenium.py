@@ -17,7 +17,7 @@ Created on Wed Apr 19 14:52:07 2023
 #This script assumes that:
 #Annotations are in geojson format.
 #Each geojson file corresponds to one annotation.
-#All geojson files are in the same directory along with cells.csv.gz.
+#All geojson files are in the same directory.
 
 import pandas as pd
 import geopandas as gpd
@@ -25,25 +25,33 @@ import shapely
 import os
 
 #Path to directory containing geojson files (one file per annotated region)
-path = ""
+annotations_path = ""
 
+#Path to cells file from Xenium output
+cells_path = ""
+
+#Origin of coordinate system
+x_origin = 0
+y_origin = 0
+ 
+
+x_origin_transform = x_origin * 0.2125
+y_origin_transform = y_origin * 0.2125
 #Load cell metadata csv (assumed to be in same directory as geojsons)
-cells = pd.read_csv(path + "/cells.csv.gz")
-
+cells = pd.read_csv(cells_path)
 #Create list of geojson files found in directory
 files = []
-for file in os.listdir(path):
+for file in os.listdir(annotations_path):
     if file.endswith(".geojson"):
         files.append(file)
         
 #Loops through each geojson in list
 for file in files:
     #Load and scale geojson (Xenium is always .2125 microns/pixel)
-    geojson = gpd.read_file(path + "/" + file)
-    scaled_geojson = geojson.scale(origin=(0,0), xfact = .2125, yfact = .2125)
-    
+    geojson = gpd.read_file(annotations_path + "/" + file)
+    scaled_geojson = geojson.scale(origin=(0, 0), xfact = .2125, yfact = .2125)
     #Create shapely points of cell centroids
-    points = shapely.points(cells["x_centroid"], cells["y_centroid"])
+    points = shapely.points(cells["x_centroid"] - x_origin_transform, cells["y_centroid"] - y_origin_transform)
     
     #Check if point is within geometry
     point_list = []
@@ -57,4 +65,4 @@ for file in files:
     cells[file] = point_list_bool
 
 #Write new metadata csv to same directory as geojsons
-cells.to_csv(path + "/partitioned_cells.csv")
+cells.to_csv(annotations_path + "/partitioned_cells.csv")

@@ -22,12 +22,12 @@ Rajat Walia<sup>11</sup>, Jennifer MS Sucre<sup>5,9</sup>, Jonathan A. Kropski<s
 <sup>*</sup> Corresponding author information: Nicholas E Banovich, nbanovich@tgen.org
 
 
-#### BiorXiv preprint: [URL](https://www.biorxiv.org/content/10.1101/2023.12.15.571954v2)
+#### Nature Genetics paper: [URL](https://www.biorxiv.org/content/10.1101/2023.12.15.571954v2](https://www.nature.com/articles/s41588-025-02080-x)
 #### GEO Accession: [GSE250346](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE250346)
 
 \
 ** NOTE ** 
-This manuscript is currently under revision. GEO files were updated August 20, 2024. Please see README included in GEO submission for important information.
+GEO files were updated August 20, 2024. Please see README included in GEO submission for important information.
 
 
 ### Transcript niche analysis
